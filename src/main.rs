@@ -21,6 +21,9 @@ fn build_cli() -> Command {
 
     Command::new("LuminS")
         .version(env!("CARGO_PKG_VERSION"))
+        // clap 2 propagated the version to subcommands, so `lms cp -V` worked.
+        // clap 4 only does that on request.
+        .propagate_version(true)
         .about(
             "Luminous Synchronize - A fast and reliable multithreaded alternative to rsync \
              for synchronizing local files",
