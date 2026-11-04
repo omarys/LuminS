@@ -47,14 +47,17 @@ pub struct ParseResult<'a> {
 
 /// Returns whether the `SetTrue` flag `name` was passed.
 ///
-/// clap 4 removed `ArgMatches::is_present`, and both `get_flag` and `get_one`
-/// panic on an id the current subcommand does not define (e.g. `nodelete` on
-/// `cp`). `try_get_one` returns `Err` for unknown ids instead, so this is the
-/// direct equivalent of clap 2's `is_present`.
+/// clap 4 removed `ArgMatches::is_present`. `get_flag` and `get_one` panic on an
+/// id the current subcommand does not define (e.g. `nodelete` on `cp`), whereas
+/// `try_get_one` answers `Ok(None)` for it, so this is the equivalent of clap 2's
+/// `is_present`.
+///
+/// `try_get_one` only returns `Err` when the id exists but does not hold a
+/// `bool`, which would mean `build_cli()` declared a flag without
+/// `ArgAction::SetTrue` - a programming error, not an absent flag.
 fn is_present(args: &ArgMatches, name: &str) -> bool {
     args.try_get_one::<bool>(name)
-        .ok()
-        .flatten()
+        .unwrap_or_else(|err| panic!("`{name}` is not a boolean flag: {err}"))
         .copied()
         .unwrap_or(false)
 }
@@ -72,13 +75,20 @@ pub fn parse_args<'a>(args: &'a ArgMatches) -> Result<ParseResult<'a>, ()> {
     let sub_command_name = args.subcommand_name().unwrap();
     let args = args.subcommand_matches(sub_command_name).unwrap();
 
-    const FLAG_NAMES: [&str; 4] = ["nodelete", "secure", "verbose", "sequential"];
+    // Each flag is paired with its own bit, so the order of this list is not
+    // load-bearing and a reordering cannot silently mint the wrong bits.
+    const FLAGS: [(Flag, &str); 4] = [
+        (Flag::NO_DELETE, "nodelete"),
+        (Flag::SECURE, "secure"),
+        (Flag::VERBOSE, "verbose"),
+        (Flag::SEQUENTIAL, "sequential"),
+    ];
 
     // Parse for flags
     let mut flags = Flag::empty();
-    for (i, &flag_name) in FLAG_NAMES.iter().enumerate() {
+    for (flag, flag_name) in FLAGS {
         if is_present(args, flag_name) {
-            flags |= Flag::from_bits_truncate(1 << i);
+            flags |= flag;
         }
     }
 
