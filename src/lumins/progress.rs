@@ -9,8 +9,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 pub static PROGRESS_BAR: LazyLock<ProgressBar> = LazyLock::new(|| {
     let progress_bar = ProgressBar::new(0);
     progress_bar.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} ({eta})")
-            .expect("hard-coded progress bar template is valid"),
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} ({eta})",
+        )
+        .expect("hard-coded progress bar template is valid"),
     );
     progress_bar
 });

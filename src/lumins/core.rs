@@ -67,8 +67,12 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
     let symlinks_to_copy = src_symlinks
         .par_iter()
         .filter(|symlink| !dest_symlinks.contains(*symlink));
-    let files_to_copy = src_files.par_iter().filter(|file| !dest_files.contains(*file));
-    let files_to_compare = src_files.par_iter().filter(|file| dest_files.contains(*file));
+    let files_to_copy = src_files
+        .par_iter()
+        .filter(|file| !dest_files.contains(*file));
+    let files_to_compare = src_files
+        .par_iter()
+        .filter(|file| dest_files.contains(*file));
 
     file_ops::copy_files(dirs_to_copy, &src, &dest);
     file_ops::copy_files(symlinks_to_copy, &src, &dest);
