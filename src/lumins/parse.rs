@@ -13,6 +13,9 @@ use crate::progress::PROGRESS_BAR;
 
 bitflags! {
     /// Enum to represent command line flags
+    ///
+    /// bitflags 2 no longer derives these traits implicitly, so they are spelled out here.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Flag: u32 {
         const NO_DELETE     = 0x1;
         const SECURE        = 0x2;
