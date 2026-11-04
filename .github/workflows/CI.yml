@@ -1,135 +1,119 @@
 name: CI
+
 on:
   pull_request:
   push:
-    branches:
-      - master
+    branches: [master]
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  matrix:
-    name: Define Matrix
-    runs-on: ubuntu-latest
-    outputs:
-      os: '["ubuntu-20.04", "windows-2019", "macos-10.15"]'
-      rust: '["stable", "nightly"]'
-    steps:
-      - run: |
-
   test:
-    needs: matrix
-    name: "Run Tests"
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.matrix.outputs.os) }}
-        rust: ${{ fromJSON(needs.matrix.outputs.rust) }}
+        os: [ubuntu-24.04, windows-2022, macos-15]
     steps:
-      - uses: actions/checkout@v2
-
-      - name: Setup rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ./target/
-          key: "cache-OS:${{ matrix.os }}-Rust:${{ matrix.rust }}-${{ hashFiles('./Cargo.toml') }}-${{ hashFiles('./Cargo.lock') }}"
-          restore-keys: |
-               "cache-OS:${{ matrix.os }}-Rust:${{ matrix.rust }}"
-
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: |
-          cargo build
-
+        run: cargo build --locked --all-targets
       - name: Test
-        run: |
-          cargo test
+        run: cargo test --locked
+
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      # The crate still carries a backlog of style lints, so the gate is limited
+      # to correctness lints: those are the ones that indicate real bugs.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D clippy::correctness
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --locked
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+      - name: Test coverage
+        run: cargo tarpaulin --locked --timeout 300 --out xml
+      - uses: codecov/codecov-action@v7
+        with:
+          files: cobertura.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
   release:
-    needs:
-      - matrix
-      - test
-    name: Create a Release
+    name: Release (${{ matrix.os }})
     if: github.event_name == 'release'
+    needs: [test]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.matrix.outputs.os) }}
-        rust:
-          - ${{ fromJSON(needs.matrix.outputs.rust)[0] }}
-        
+        os: [ubuntu-24.04, windows-2022, macos-15]
     steps:
-      - uses: actions/checkout@v2
-
-      - name: Setup rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Build
+        run: cargo build --locked --release
+      - name: Package
+        shell: bash
         run: |
-          cargo build --release
-          
-      - name: Upload release binaries
-        uses: actions/upload-artifact@v2
+          set -eu
+          name="lms-${{ github.ref_name }}-${{ matrix.os }}"
+          mkdir -p "dist/$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/lms.exe "dist/$name/"
+          else
+            cp target/release/lms "dist/$name/"
+          fi
+          cp README.md LICENSE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v7
         with:
-          name: lms-${{ matrix.os }}
-          path: |
-            target/release/lms*
-            
-  coverage:
-    needs:
-      - matrix
-      - test
-    name: Generate Coverage Report
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ${{ fromJSON(needs.matrix.outputs.os)[0] }}
-        rust:
-          - ${{ fromJSON(needs.matrix.outputs.rust)[0] }}
-    steps:
-      - uses: actions/checkout@v2
-
-      - name: Setup rust
-        uses: actions-rs/toolchain@v1
+          name: lms-${{ github.ref_name }}-${{ matrix.os }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v3
         with:
-          toolchain: ${{ matrix.rust }}
-          
-      - name: Cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ./target/
-          key: "cache:coverage-OS:${{ matrix.os }}-Rust:${{ matrix.rust }}-${{ hashFiles('./Cargo.toml') }}-${{ hashFiles('./Cargo.lock') }}"
-          restore-keys: |
-               "cache:coverage-OS:${{ matrix.os }}-Rust:${{ matrix.rust }}"
-               
-      - name: Install tarpaulin
-        run: |
-          cargo install --force cargo-tarpaulin
-
-      - name: Generate code coverage
-        run: cargo tarpaulin --timeout 300 --out Xml
-
-      - name: Upload to codecov.io
-        uses: codecov/codecov-action@v2
-        with:
-          fail_ci_if_error: true
-        
+          files: dist/*.tar.gz
