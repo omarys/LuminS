@@ -16,7 +16,7 @@ travis-ci = { repository = "wchang22/LuminS", branch = "master" }
 codecov = { repository = "wchang22/LuminS", branch = "master", service = "github" }
 
 [dependencies]
-clap = {version = "2.33.1", features = ["yaml"]}
+clap = "4.6.7"
 rayon = "1.12.0"
 blake2 = "0.10.6"
 hashbrown = {version = "0.17.1", features = ["rayon"]}

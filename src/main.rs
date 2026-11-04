@@ -1,15 +1,131 @@
 use std::process;
 
-use clap::{load_yaml, App};
+use clap::{Arg, ArgAction, Command};
 
 use lms::core;
 use lms::parse::{self, SubCommandType};
 use lms::progress::PROGRESS_BAR;
 
+/// Builds the command line interface.
+///
+/// Replaces the clap 2 `src/cli.yml` + `load_yaml!`/`App::from_yaml` setup:
+/// clap 4 has no YAML feature, so the whole interface is declared here.
+fn build_cli() -> Command {
+    let verbose = || {
+        Arg::new("verbose")
+            .short('v')
+            .long("verbose")
+            .action(ArgAction::SetTrue)
+            .help("Verbose outputs")
+    };
+
+    Command::new("LuminS")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about(
+            "Luminous Synchronize - A fast and reliable multithreaded alternative to rsync \
+             for synchronizing local files",
+        )
+        .help_template("{name} {version}\n{about}\n\n{usage-heading} {usage}\n\n{all-args}")
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("cp")
+                .about("Multithreaded directory copy")
+                .arg_required_else_help(true)
+                .arg(verbose())
+                .arg(
+                    Arg::new("sequential")
+                        .short('S')
+                        .long("sequential")
+                        .action(ArgAction::SetTrue)
+                        .help("Copy files sequentially instead of in parallel"),
+                )
+                .arg(
+                    Arg::new("SOURCE")
+                        .help("Source directory")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    Arg::new("DESTINATION")
+                        .help("Destination directory")
+                        .required(true)
+                        .index(2),
+                ),
+        )
+        .subcommand(
+            Command::new("rm")
+                .about("Multithreaded directory remove")
+                .arg_required_else_help(true)
+                .arg(verbose())
+                .arg(
+                    Arg::new("sequential")
+                        .short('S')
+                        .long("sequential")
+                        .action(ArgAction::SetTrue)
+                        .help("Delete files sequentially instead of in parallel"),
+                )
+                .arg(
+                    Arg::new("TARGET")
+                        .help("Target directory")
+                        .required(true)
+                        .num_args(1..)
+                        .index(1),
+                ),
+        )
+        .subcommand(
+            Command::new("sync")
+                .about("Multithreaded directory synchronization")
+                .visible_alias("s")
+                .arg_required_else_help(true)
+                .arg(
+                    Arg::new("nodelete")
+                        .short('n')
+                        .long("nodelete")
+                        .action(ArgAction::SetTrue)
+                        .help("Do not delete any destination files"),
+                )
+                .arg(
+                    Arg::new("secure")
+                        .short('s')
+                        .long("secure")
+                        .action(ArgAction::SetTrue)
+                        .help("Use a cryptographic hash function for hashing similar files"),
+                )
+                .arg(verbose())
+                .arg(
+                    Arg::new("sequential")
+                        .short('S')
+                        .long("sequential")
+                        .action(ArgAction::SetTrue)
+                        .help("Copy files sequentially instead of in parallel"),
+                )
+                .arg(
+                    Arg::new("SOURCE")
+                        .help("Source directory")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    Arg::new("DESTINATION")
+                        .help("Destination directory")
+                        .required(true)
+                        .index(2),
+                ),
+        )
+}
+
 fn main() {
     // Parse command args
-    let yaml = load_yaml!("cli.yml");
-    let args = App::from_yaml(yaml).get_matches();
+    //
+    // `try_get_matches` plus an explicit exit keeps clap 2's exit codes: 0 for
+    // `--help`/`--version`, 1 for every usage error. clap 4 exits 2 on its own.
+    let args = match build_cli().try_get_matches() {
+        Ok(matches) => matches,
+        Err(e) => {
+            let _ = e.print();
+            process::exit(if e.use_stderr() { 1 } else { 0 });
+        }
+    };
 
     // Determine subcommands and flags from args
     let (sub_command, flags) = match parse::parse_args(&args) {

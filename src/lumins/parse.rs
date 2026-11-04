@@ -45,6 +45,20 @@ pub struct ParseResult<'a> {
     pub flags: Flag,
 }
 
+/// Returns whether the `SetTrue` flag `name` was passed.
+///
+/// clap 4 removed `ArgMatches::is_present`, and both `get_flag` and `get_one`
+/// panic on an id the current subcommand does not define (e.g. `nodelete` on
+/// `cp`). `try_get_one` returns `Err` for unknown ids instead, so this is the
+/// direct equivalent of clap 2's `is_present`.
+fn is_present(args: &ArgMatches, name: &str) -> bool {
+    args.try_get_one::<bool>(name)
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false)
+}
+
 /// Parses command line arguments for source and destination folders and
 /// creates the destination folder if it does not exist
 ///
@@ -63,7 +77,7 @@ pub fn parse_args<'a>(args: &'a ArgMatches) -> Result<ParseResult<'a>, ()> {
     // Parse for flags
     let mut flags = Flag::empty();
     for (i, &flag_name) in FLAG_NAMES.iter().enumerate() {
-        if args.is_present(flag_name) {
+        if is_present(args, flag_name) {
             flags |= Flag::from_bits_truncate(1 << i);
         }
     }
@@ -71,22 +85,22 @@ pub fn parse_args<'a>(args: &'a ArgMatches) -> Result<ParseResult<'a>, ()> {
     // These values are safe to unwrap since the args are required
     let mut sub_command = match sub_command_name {
         "cp" => SubCommand {
-            src: Some(args.value_of("SOURCE").unwrap()),
-            dest: vec![args.value_of("DESTINATION").unwrap().to_string()],
+            src: Some(args.get_one::<String>("SOURCE").unwrap()),
+            dest: vec![args.get_one::<String>("DESTINATION").unwrap().to_string()],
             sub_command_type: SubCommandType::Copy,
         },
         "rm" => SubCommand {
             src: None,
             dest: args
-                .values_of("TARGET")
+                .get_many::<String>("TARGET")
                 .unwrap()
                 .map(|value| value.to_string())
                 .collect(),
             sub_command_type: SubCommandType::Remove,
         },
         "sync" => SubCommand {
-            src: Some(args.value_of("SOURCE").unwrap()),
-            dest: vec![args.value_of("DESTINATION").unwrap().to_string()],
+            src: Some(args.get_one::<String>("SOURCE").unwrap()),
+            dest: vec![args.get_one::<String>("DESTINATION").unwrap().to_string()],
             sub_command_type: SubCommandType::Synchronize,
         },
         _ => return Err(()),
