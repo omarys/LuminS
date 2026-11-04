@@ -46,18 +46,28 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
     let delete = !flags.contains(Flag::NO_DELETE);
 
     // Delete files and symlinks
+    //
+    // hashbrown 0.17 dropped the rayon-backed `par_difference`/`par_intersection`
+    // set operations (it now only ships `par_iter`/`into_par_iter`), so the same
+    // operations are expressed as parallel filters over `par_iter`.
     if delete {
-        let symlinks_to_delete = dest_symlinks.par_difference(&src_symlinks);
-        let files_to_delete = dest_files.par_difference(&src_files);
+        let symlinks_to_delete = dest_symlinks
+            .par_iter()
+            .filter(|symlink| !src_symlinks.contains(*symlink));
+        let files_to_delete = dest_files
+            .par_iter()
+            .filter(|file| !src_files.contains(*file));
 
         file_ops::delete_files(symlinks_to_delete, &dest);
         file_ops::delete_files(files_to_delete, &dest);
     }
 
-    let dirs_to_copy = src_dirs.par_difference(&dest_dirs);
-    let symlinks_to_copy = src_symlinks.par_difference(&dest_symlinks);
-    let files_to_copy = src_files.par_difference(&dest_files);
-    let files_to_compare = src_files.par_intersection(&dest_files);
+    let dirs_to_copy = src_dirs.par_iter().filter(|dir| !dest_dirs.contains(*dir));
+    let symlinks_to_copy = src_symlinks
+        .par_iter()
+        .filter(|symlink| !dest_symlinks.contains(*symlink));
+    let files_to_copy = src_files.par_iter().filter(|file| !dest_files.contains(*file));
+    let files_to_compare = src_files.par_iter().filter(|file| dest_files.contains(*file));
 
     file_ops::copy_files(dirs_to_copy, &src, &dest);
     file_ops::copy_files(symlinks_to_copy, &src, &dest);
@@ -66,7 +76,7 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
 
     // Delete dirs in the correct order
     if delete {
-        let dirs_to_delete = dest_dirs.par_difference(&src_dirs);
+        let dirs_to_delete = dest_dirs.par_iter().filter(|dir| !src_dirs.contains(*dir));
         let dirs_to_delete: Vec<&file_ops::Dir> = file_ops::sort_files(dirs_to_delete);
         file_ops::delete_files_sequential(dirs_to_delete, &dest);
     }
