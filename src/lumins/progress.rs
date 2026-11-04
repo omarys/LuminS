@@ -9,18 +9,17 @@ lazy_static! {
     pub static ref PROGRESS_BAR: ProgressBar = {
         let progress_bar = ProgressBar::new(0);
         progress_bar.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} ({eta})"),
+            ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} ({eta})")
+                .expect("hard-coded progress bar template is valid"),
         );
         progress_bar
     };
 }
 
-/// Initializes PROGRESS_BAR with `length` and sets draw delta
+/// Initializes PROGRESS_BAR with `length`
 /// # Arguments
 /// * `length`: Length fo the bar to set
 pub fn progress_init(length: u64) {
     PROGRESS_BAR.set_length(length);
-    PROGRESS_BAR.set_draw_delta(length / 1000);
     PROGRESS_BAR.set_position(0);
 }
