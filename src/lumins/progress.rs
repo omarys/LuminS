@@ -1,20 +1,19 @@
 //! Keeps track of LuminS' progress
 
-use indicatif::{ProgressBar, ProgressStyle};
-use lazy_static::lazy_static;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// Provides a bar that shows the number of files
-    /// copied, synchronized, or deleted, out of the total number of files
-    pub static ref PROGRESS_BAR: ProgressBar = {
-        let progress_bar = ProgressBar::new(0);
-        progress_bar.set_style(
-            ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} ({eta})")
-                .expect("hard-coded progress bar template is valid"),
-        );
-        progress_bar
-    };
-}
+use indicatif::{ProgressBar, ProgressStyle};
+
+/// Provides a bar that shows the number of files
+/// copied, synchronized, or deleted, out of the total number of files
+pub static PROGRESS_BAR: LazyLock<ProgressBar> = LazyLock::new(|| {
+    let progress_bar = ProgressBar::new(0);
+    progress_bar.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} ({eta})")
+            .expect("hard-coded progress bar template is valid"),
+    );
+    progress_bar
+});
 
 /// Initializes PROGRESS_BAR with `length`
 /// # Arguments
