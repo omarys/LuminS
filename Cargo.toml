@@ -18,7 +18,7 @@ codecov = { repository = "wchang22/LuminS", branch = "master", service = "github
 [dependencies]
 clap = {version = "2.33.1", features = ["yaml"]}
 rayon = "1.12.0"
-blake2 = "0.9.0"
+blake2 = "0.10.6"
 hashbrown = {version = "0.17.1", features = ["rayon"]}
 seahash = "4.1.0"
 env_logger = "0.11.11"

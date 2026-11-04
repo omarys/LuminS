@@ -6,7 +6,7 @@ use std::marker::Sync;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use blake2::{Blake2b, Digest};
+use blake2::{Blake2b512, Digest};
 use hashbrown::HashSet;
 use log::{error, info};
 use rayon::prelude::*;
@@ -443,7 +443,7 @@ where
 
     match &mut fs::File::open(&file) {
         Ok(file) => {
-            let mut hasher = Blake2b::new();
+            let mut hasher = Blake2b512::new();
 
             match io::copy(file, &mut hasher) {
                 Ok(_) => Some(hasher.finalize().to_vec()),
