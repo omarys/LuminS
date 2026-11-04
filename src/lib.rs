@@ -1,18 +1,20 @@
 //! LuminS (lms) is a fast and reliable alternative to rsync for synchronizing local files
 //!
-//! ```usage
-//! USAGE:
-//!    lms [SUBCOMMAND]
+//! ```text
+//! LuminS 0.4.0
+//! Luminous Synchronize - A fast and reliable multithreaded alternative to rsync for synchronizing local files
 //!
-//! FLAGS:
-//!    -h, --help       Prints help information
-//!    -V, --version    Prints version information
+//! Usage: lms [COMMAND]
 //!
-//! SUBCOMMANDS:
-//!    cp      Multithreaded directory copy
-//!    help    Prints this message or the help of the given subcommand(s)
-//!    rm      Multithreaded directory remove
-//!    sync    Multithreaded directory synchronization [aliases: s]
+//! Commands:
+//!   cp    Multithreaded directory copy
+//!   rm    Multithreaded directory remove
+//!   sync  Multithreaded directory synchronization [alias: s]
+//!   help  Print this message or the help of the given subcommand(s)
+//!
+//! Options:
+//!   -h, --help     Print help
+//!   -V, --version  Print version
 //! ```
 
 mod lumins;

@@ -3,7 +3,7 @@
 <h4 align="center">A fast and reliable alternative to rsync for synchronizing local files</h4>
 
 <p align="center">
-  <a href="https://travis-ci.org/wchang22/LuminS"><img src="https://travis-ci.org/wchang22/LuminS.svg?branch=master" alt="Build Status" /></a>
+  <a href="https://github.com/wchang22/LuminS/actions/workflows/CI.yml"><img src="https://github.com/wchang22/LuminS/actions/workflows/CI.yml/badge.svg?branch=master" alt="Build Status" /></a>
   <a href="https://codecov.io/gh/wchang22/LuminS"><img src="https://codecov.io/gh/wchang22/LuminS/branch/master/graph/badge.svg" alt="Code Coverage" /></a>
   <a href="https://crates.io/crates/lms"><img src="https://img.shields.io/crates/v/lms.svg" alt="Crate" /></a>
   <a href="https://docs.rs/lms"><img src="https://docs.rs/lms/badge.svg" alt="Docs" /></a>
@@ -29,74 +29,79 @@
 ## Usage
 
 ```bash
-USAGE:
-    lms [SUBCOMMAND]
+LuminS 0.4.0
+Luminous Synchronize - A fast and reliable multithreaded alternative to rsync for synchronizing local files
 
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
+Usage: lms [COMMAND]
 
-SUBCOMMANDS:
-    cp      Multithreaded directory copy
-    help    Prints this message or the help of the given subcommand(s)
-    rm      Multithreaded directory remove
-    sync    Multithreaded directory synchronization [aliases: s]
+Commands:
+  cp    Multithreaded directory copy
+  rm    Multithreaded directory remove
+  sync  Multithreaded directory synchronization [alias: s]
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 #### Sync
 
 ```bash
-USAGE:
-    lms sync [FLAGS] <SOURCE> <DESTINATION>
+Multithreaded directory synchronization
 
-FLAGS:
-    -h, --help          Prints help information
-    -n, --nodelete      Do not delete any destination files
-    -s, --secure        Use a cryptographic hash function for hashing similar files
-    -S, --sequential    Copy files sequentially instead of in parallel
-    -V, --version       Prints version information
-    -v, --verbose       Verbose outputs
+Usage: lms sync [OPTIONS] <SOURCE> <DESTINATION>
 
-ARGS:
-    <SOURCE>         Source directory
-    <DESTINATION>    Destination directory
+Arguments:
+  <SOURCE>       Source directory
+  <DESTINATION>  Destination directory
+
+Options:
+  -n, --nodelete    Do not delete any destination files
+  -s, --secure      Use a cryptographic hash function for hashing similar files
+  -v, --verbose     Verbose outputs
+  -S, --sequential  Copy files sequentially instead of in parallel
+  -h, --help        Print help
+  -V, --version     Print version
 ```
 
 #### Copy
 
 ```bash
-USAGE:
-    lms cp [FLAGS] <SOURCE> <DESTINATION>
+Multithreaded directory copy
 
-FLAGS:
-    -h, --help          Prints help information
-    -S, --sequential    Copy files sequentially instead of in parallel
-    -V, --version       Prints version information
-    -v, --verbose       Verbose outputs
+Usage: lms cp [OPTIONS] <SOURCE> <DESTINATION>
 
-ARGS:
-    <SOURCE>         Source directory
-    <DESTINATION>    Destination directory
+Arguments:
+  <SOURCE>       Source directory
+  <DESTINATION>  Destination directory
+
+Options:
+  -v, --verbose     Verbose outputs
+  -S, --sequential  Copy files sequentially instead of in parallel
+  -h, --help        Print help
+  -V, --version     Print version
 ```
 
 #### Remove
 
 ```bash
-USAGE:
-    lms rm [FLAGS] <TARGET>...
+Multithreaded directory remove
 
-FLAGS:
-    -h, --help          Prints help information
-    -S, --sequential    Delete files sequentially instead of in parallel
-    -V, --version       Prints version information
-    -v, --verbose       Verbose outputs
+Usage: lms rm [OPTIONS] <TARGET>...
 
-ARGS:
-    <TARGET>    Target directory
+Arguments:
+  <TARGET>...  Target directory
+
+Options:
+  -v, --verbose     Verbose outputs
+  -S, --sequential  Delete files sequentially instead of in parallel
+  -h, --help        Print help
+  -V, --version     Print version
 ```
 
 ## Benchmarks
 
-Using [hyperfine](https://github.com/sharkdp/hyperfine) on an Intel i7-8550U with the following 2 test folders,
+Using [hyperfine](https://github.com/sharkdp/hyperfine) on an Intel i7-8550U with the following 2 test folders. Measured with the 0.4.0 release binary and default release settings (no LTO); the current release profile enables `lto`, `codegen-units = 1` and `strip`, so the numbers below are a lower bound rather than a fresh measurement.
 
 | Directory | Directory Size | Number of Files |
 | --------- | -------------- | --------------- |
@@ -123,7 +128,7 @@ Of course, these benchmarks can be highly dependent on CPU and IO devices.
 
 ## Build
 
-First [install](https://www.rust-lang.org/tools/install) Rust (recommended using rustup).
+First [install](https://www.rust-lang.org/tools/install) Rust (recommended using rustup). The minimum supported Rust version is 1.85.
 
 ```zsh
 $ git clone https://github.com/wchang22/LuminS.git
