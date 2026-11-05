@@ -59,8 +59,8 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
             .par_iter()
             .filter(|file| !src_files.contains(*file));
 
-        file_ops::delete_files(symlinks_to_delete, dest);
-        file_ops::delete_files(files_to_delete, dest);
+        file_ops::delete_files(symlinks_to_delete, dest)?;
+        file_ops::delete_files(files_to_delete, dest)?;
     }
 
     let dirs_to_copy = src_dirs.par_iter().filter(|dir| !dest_dirs.contains(*dir));
@@ -74,16 +74,16 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
         .par_iter()
         .filter(|file| dest_files.contains(*file));
 
-    file_ops::copy_files(dirs_to_copy, src, dest);
-    file_ops::copy_files(symlinks_to_copy, src, dest);
-    file_ops::copy_files(files_to_copy, src, dest);
-    file_ops::compare_and_copy_files(files_to_compare, src, dest, flags);
+    file_ops::copy_files(dirs_to_copy, src, dest)?;
+    file_ops::copy_files(symlinks_to_copy, src, dest)?;
+    file_ops::copy_files(files_to_copy, src, dest)?;
+    file_ops::compare_and_copy_files(files_to_compare, src, dest, flags)?;
 
     // Delete dirs in the correct order
     if delete {
         let dirs_to_delete = dest_dirs.par_iter().filter(|dir| !src_dirs.contains(*dir));
         let dirs_to_delete: Vec<&file_ops::Dir> = file_ops::sort_files(dirs_to_delete);
-        file_ops::delete_files_sequential(dirs_to_delete, dest);
+        file_ops::delete_files_sequential(dirs_to_delete, dest)?;
     }
 
     Ok(())
@@ -112,9 +112,9 @@ pub fn copy(src: &str, dest: &str, _flags: Flag) -> Result<(), io::Error> {
     progress::progress_init((src_files.len() + src_dirs.len() + src_symlinks.len()) as u64);
 
     // Copy everything
-    file_ops::copy_files(src_dirs.into_par_iter(), src, dest);
-    file_ops::copy_files(src_files.into_par_iter(), src, dest);
-    file_ops::copy_files(src_symlinks.into_par_iter(), src, dest);
+    file_ops::copy_files(src_dirs.into_par_iter(), src, dest)?;
+    file_ops::copy_files(src_files.into_par_iter(), src, dest)?;
+    file_ops::copy_files(src_symlinks.into_par_iter(), src, dest)?;
 
     Ok(())
 }
@@ -143,8 +143,8 @@ pub fn remove(target: &str, _flags: Flag) -> Result<(), io::Error> {
     PROGRESS_BAR.enable_steady_tick(Duration::from_millis(1000));
 
     // Delete everything
-    file_ops::delete_files(target_files.into_par_iter(), target);
-    file_ops::delete_files(target_symlinks.into_par_iter(), target);
+    file_ops::delete_files(target_files.into_par_iter(), target)?;
+    file_ops::delete_files(target_symlinks.into_par_iter(), target)?;
 
     // Directories must always be deleted sequentially so that they are deleted in the correct order
     let mut target_dirs: Vec<&file_ops::Dir> = file_ops::sort_files(target_dirs.into_par_iter());
@@ -153,7 +153,7 @@ pub fn remove(target: &str, _flags: Flag) -> Result<(), io::Error> {
     let root_dir = Dir::from("");
     target_dirs.push(&root_dir);
 
-    file_ops::delete_files_sequential(target_dirs, target);
+    file_ops::delete_files_sequential(target_dirs, target)?;
 
     Ok(())
 }

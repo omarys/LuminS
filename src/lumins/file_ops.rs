@@ -1,14 +1,16 @@
 //! Contains utilities for copying, deleting, sorting, hashing files.
 
-use std::marker::Sync;
+use std::hash::Hasher;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::{fs, io};
 
 use blake2::{Blake2b512, Digest};
 use hashbrown::HashSet;
 use log::{error, info};
 use rayon::prelude::*;
-use seahash;
+use seahash::SeaHasher;
 
 use crate::lumins::parse::Flag;
 use crate::progress::PROGRESS_BAR;
@@ -19,8 +21,18 @@ use crate::progress::PROGRESS_BAR;
 /// a way of obtaining their path, copying, and deleting
 pub trait FileOps {
     fn path(&self) -> &Path;
-    fn remove(&self, path: &Path);
-    fn copy(&self, src: &Path, dest: &Path);
+    /// Removes the entry at `path`
+    ///
+    /// # Errors
+    /// Returns the failure instead of logging it, so a delete that did not
+    /// happen still reaches the caller: `lms` must not report success on a
+    /// partially deleted tree.
+    fn remove(&self, path: &Path) -> io::Result<()>;
+    /// Copies the entry to `dest`
+    ///
+    /// # Errors
+    /// Returns the failure for the same reason as `remove`.
+    fn copy(&self, src: &Path, dest: &Path) -> io::Result<()>;
 }
 
 /// A struct that represents a single file
@@ -34,17 +46,15 @@ impl FileOps for File {
     fn path(&self) -> &Path {
         &self.path
     }
-    fn remove(&self, path: &Path) {
-        match fs::remove_file(path) {
-            Ok(_) => info!("Deleting file {:?}", path),
-            Err(e) => error!("Error -- Deleting file {:?}: {}", path, e),
-        }
+    fn remove(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)?;
+        info!("Deleting file {:?}", path);
+        Ok(())
     }
-    fn copy(&self, src: &Path, dest: &Path) {
-        match fs::copy(src, dest) {
-            Ok(_) => info!("Copying file {:?} -> {:?}", src, dest),
-            Err(e) => error!("Error -- Copying file {:?}: {}", src, e),
-        }
+    fn copy(&self, src: &Path, dest: &Path) -> io::Result<()> {
+        fs::copy(src, dest)?;
+        info!("Copying file {:?} -> {:?}", src, dest);
+        Ok(())
     }
 }
 
@@ -67,17 +77,15 @@ impl FileOps for Dir {
     fn path(&self) -> &Path {
         &self.path
     }
-    fn remove(&self, path: &Path) {
-        match fs::remove_dir(path) {
-            Ok(_) => info!("Deleting dir {:?}", path),
-            Err(e) => error!("Error -- Deleting dir {:?}: {}", path, e),
-        }
+    fn remove(&self, path: &Path) -> io::Result<()> {
+        fs::remove_dir(path)?;
+        info!("Deleting dir {:?}", path);
+        Ok(())
     }
-    fn copy(&self, _src: &Path, dest: &Path) {
-        match fs::create_dir_all(dest) {
-            Ok(_) => info!("Creating dir {:?}", dest),
-            Err(e) => error!("Error -- Creating dir {:?}: {}", dest, e),
-        }
+    fn copy(&self, _src: &Path, dest: &Path) -> io::Result<()> {
+        fs::create_dir_all(dest)?;
+        info!("Creating dir {:?}", dest);
+        Ok(())
     }
 }
 
@@ -100,36 +108,33 @@ impl FileOps for Symlink {
     fn path(&self) -> &Path {
         &self.path
     }
-    fn remove(&self, path: &Path) {
-        match fs::remove_file(path) {
-            Ok(_) => info!("Deleting symlink {:?}", path),
-            Err(e) => error!("Error -- Deleting symlink {:?}: {}", path, e),
-        }
+    fn remove(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)?;
+        info!("Deleting symlink {:?}", path);
+        Ok(())
     }
     #[cfg(target_family = "unix")]
-    fn copy(&self, _src: &Path, dest: &Path) {
+    fn copy(&self, _src: &Path, dest: &Path) -> io::Result<()> {
         use std::os::unix::fs;
 
-        match fs::symlink(&self.target, dest) {
-            Ok(_) => info!("Creating symlink {:?} -> {:?}", dest, self.target),
-            Err(e) => error!("Error -- Creating symlink {:?}: {}", dest, e),
-        }
+        fs::symlink(&self.target, dest)?;
+        info!("Creating symlink {:?} -> {:?}", dest, self.target);
+        Ok(())
     }
     #[cfg(target_family = "windows")]
-    fn copy(&self, _src: &Path, dest: &Path) {
+    fn copy(&self, _src: &Path, dest: &Path) -> io::Result<()> {
         use std::os::windows::fs;
-        if self.target.is_file() {
-            match fs::symlink_file(&self.target, &dest) {
-                Ok(_) => info!("Creating symlink file {:?} -> {:?}", dest, self.target),
-                Err(e) => error!("Error -- Creating symlink file{:?}: {}", dest, e),
-            }
-        }
+
+        // A dangling target is created as a file symlink; `is_dir` is the only
+        // distinction Windows makes.
         if self.target.is_dir() {
-            match fs::symlink_dir(&self.target, &dest) {
-                Ok(_) => info!("Creating symlink dir {:?} -> {:?}", dest, self.target),
-                Err(e) => error!("Error -- Creating symlink dir {:?}: {}", dest, e),
-            }
+            fs::symlink_dir(&self.target, dest)?;
+            info!("Creating symlink dir {:?} -> {:?}", dest, self.target);
+        } else {
+            fs::symlink_file(&self.target, dest)?;
+            info!("Creating symlink file {:?} -> {:?}", dest, self.target);
         }
+        Ok(())
     }
 }
 
@@ -200,15 +205,30 @@ impl FileSets {
 /// * `dest`: base directory of the files to copy to, such that for all `file` in
 ///   `files_to_compare`, `dest + file.path()` is the absolute path of the destination file
 /// * `flags`: set for Flag's
-pub fn compare_and_copy_files<'a, T, S>(files_to_compare: T, src: &str, dest: &str, flags: Flag)
+///
+/// # Errors
+/// Returns an error naming the entries that could not be compared or copied;
+/// every other file is still processed.
+pub fn compare_and_copy_files<'a, T, S>(
+    files_to_compare: T,
+    src: &str,
+    dest: &str,
+    flags: Flag,
+) -> io::Result<()>
 where
     T: ParallelIterator<Item = &'a S>,
     S: FileOps + Sync + 'a,
 {
+    let failures = Failures::default();
+
     files_to_compare.for_each(|file| {
-        compare_and_copy_file(file, src, dest, flags);
+        if let Err(e) = compare_and_copy_file(file, src, dest, flags) {
+            failures.record(&Path::new(src).join(file.path()), e);
+        }
         PROGRESS_BAR.inc(2);
     });
+
+    failures.into_result("copy")
 }
 
 /// Compares the given file and copies the src file over if it differs from the dest file
@@ -220,36 +240,36 @@ where
 /// * `dest`: base directory of the files to copy to, such that `dest + file.path()`
 ///   is the absolute path of the destination file
 /// * `flags`: set for Flag's
-fn compare_and_copy_file<S>(file_to_compare: &S, src: &str, dest: &str, flags: Flag)
+///
+/// # Errors
+/// Returns an error if the copy was needed and failed.
+fn compare_and_copy_file<S>(
+    file_to_compare: &S,
+    src: &str,
+    dest: &str,
+    flags: Flag,
+) -> io::Result<()>
 where
     S: FileOps,
 {
-    if flags.contains(Flag::SECURE) {
-        let src_file_hash_secure = hash_file_secure(file_to_compare, src);
-
-        if src_file_hash_secure.is_none() {
-            copy_file(file_to_compare, src, dest);
-            return;
-        }
-
-        let dest_file_hash_secure = hash_file_secure(file_to_compare, dest);
-
-        if src_file_hash_secure != dest_file_hash_secure {
-            copy_file(file_to_compare, src, dest);
+    // An unhashable source is copied rather than skipped: it may be the only
+    // copy left, and copying it again is cheaper than losing it.
+    let copy = if flags.contains(Flag::SECURE) {
+        match hash_file_secure(file_to_compare, src) {
+            None => true,
+            Some(src_hash) => Some(src_hash) != hash_file_secure(file_to_compare, dest),
         }
     } else {
-        let src_file_hash = hash_file(file_to_compare, src);
-
-        if src_file_hash.is_none() {
-            copy_file(file_to_compare, src, dest);
-            return;
+        match hash_file(file_to_compare, src) {
+            None => true,
+            Some(src_hash) => Some(src_hash) != hash_file(file_to_compare, dest),
         }
+    };
 
-        let dest_file_hash = hash_file(file_to_compare, dest);
-
-        if src_file_hash != dest_file_hash {
-            copy_file(file_to_compare, src, dest);
-        }
+    if copy {
+        copy_file(file_to_compare, src, dest)
+    } else {
+        Ok(())
     }
 }
 
@@ -261,15 +281,25 @@ where
 ///   `files_to_copy`, `src + file.path()` is the absolute path of the source file
 /// * `dest`: base directory of the files to copy to, such that for all `file` in
 ///   `files_to_copy`, `dest + file.path()` is the absolute path of the destination file
-pub fn copy_files<'a, T, S>(files_to_copy: T, src: &str, dest: &str)
+///
+/// # Errors
+/// Returns an error naming the entries that could not be copied; every other
+/// file is still copied.
+pub fn copy_files<'a, T, S>(files_to_copy: T, src: &str, dest: &str) -> io::Result<()>
 where
     T: ParallelIterator<Item = &'a S>,
     S: FileOps + Sync + 'a,
 {
+    let failures = Failures::default();
+
     files_to_copy.for_each(|file| {
-        copy_file(file, src, dest);
+        if let Err(e) = copy_file(file, src, dest) {
+            failures.record(&Path::new(src).join(file.path()), e);
+        }
         PROGRESS_BAR.inc(1);
     });
+
+    failures.into_result("copy")
 }
 
 /// Copies a single file from `src` to `dest`
@@ -280,14 +310,14 @@ where
 ///   is the absolute path of the source file
 /// * `dest`: base directory of the files to copy to, such that `dest + file.path()`
 ///   is the absolute path of the destination file
-fn copy_file<S>(file_to_copy: &S, src: &str, dest: &str)
+fn copy_file<S>(file_to_copy: &S, src: &str, dest: &str) -> io::Result<()>
 where
     S: FileOps,
 {
     let src_file = Path::new(src).join(file_to_copy.path());
     let dest_file = Path::new(dest).join(file_to_copy.path());
 
-    file_to_copy.copy(&src_file, &dest_file);
+    file_to_copy.copy(&src_file, &dest_file)
 }
 
 /// Deletes all given files in parallel
@@ -298,16 +328,26 @@ where
 /// * `files_to_delete`: files to delete
 /// * `location`: base directory of the files to delete, such that for all `file` in
 ///   `files_to_delete`, `location + file.path()` is the absolute path of the file
-pub fn delete_files<'a, T, S>(files_to_delete: T, location: &str)
+///
+/// # Errors
+/// Returns an error naming the entries that could not be deleted; every other
+/// file is still deleted.
+pub fn delete_files<'a, T, S>(files_to_delete: T, location: &str) -> io::Result<()>
 where
     T: ParallelIterator<Item = &'a S>,
     S: FileOps + Sync + 'a,
 {
+    let failures = Failures::default();
+
     files_to_delete.for_each(|file| {
         let path = Path::new(location).join(file.path());
-        file.remove(&path);
+        if let Err(e) = file.remove(&path) {
+            failures.record(&path, e);
+        }
         PROGRESS_BAR.inc(1);
     });
+
+    failures.into_result("delete")
 }
 
 /// Deletes all given files sequentially
@@ -318,15 +358,72 @@ where
 /// * `files_to_delete`: files to delete, or sorted empty directories
 /// * `location`: base directory of the files to delete, such that for all `file` in
 ///   `files_to_delete`, `location + file.path()` is the absolute path of the file
-pub fn delete_files_sequential<'a, T, S>(files_to_delete: T, location: &str)
+///
+/// # Errors
+/// Returns an error naming the directories that could not be deleted; the
+/// remaining directories are still attempted.
+pub fn delete_files_sequential<'a, T, S>(files_to_delete: T, location: &str) -> io::Result<()>
 where
     T: IntoIterator<Item = &'a S>,
     S: FileOps + 'a,
 {
+    let failures = Failures::default();
+
     for file in files_to_delete {
         let path = Path::new(location).join(file.path());
-        file.remove(&path);
+        if let Err(e) = file.remove(&path) {
+            failures.record(&path, e);
+        }
         PROGRESS_BAR.inc(1);
+    }
+
+    failures.into_result("delete")
+}
+
+/// Collects the failures of one pass over a tree
+///
+/// A single unreadable file must not abort a whole sync or delete, but a partial
+/// result must not be reported as success either. Failures are gathered here and
+/// reported once, when the pass is over.
+#[derive(Debug, Default)]
+struct Failures(Mutex<Vec<String>>);
+
+impl Failures {
+    /// Records the failure of `path`, recovering the list if a worker panicked
+    /// while holding the lock
+    fn record(&self, path: &Path, err: io::Error) {
+        let mut failures = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        failures.push(format!("{path:?}: {err}"));
+    }
+
+    /// Consumes the collector, turning `action` failures into an error
+    ///
+    /// Every failure is reported up to a handful, so that the message stays
+    /// readable without needing `RUST_LOG` to find out what went wrong.
+    fn into_result(self, action: &str) -> io::Result<()> {
+        const SHOWN: usize = 5;
+
+        let failures = self
+            .0
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(first) = failures.first() else {
+            return Ok(());
+        };
+
+        let mut message = format!("failed to {action} {} entries\n  {first}", failures.len());
+        let rest = &failures[1..];
+        for failure in rest.iter().take(SHOWN - 1) {
+            message.push_str(&format!("\n  {failure}"));
+        }
+        if rest.len() >= SHOWN {
+            message.push_str(&format!("\n  ... and {} more", rest.len() - (SHOWN - 1)));
+        }
+
+        Err(io::Error::other(message))
     }
 }
 
@@ -370,11 +467,40 @@ pub fn hash_file<S>(file_to_hash: &S, location: &str) -> Option<u64>
 where
     S: FileOps,
 {
-    let file = Path::new(location).join(file_to_hash.path());
+    let path = Path::new(location).join(file_to_hash.path());
 
-    match fs::read(file) {
-        Ok(contents) => Some(seahash::hash(&contents)),
-        Err(_) => None,
+    let mut file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            error!("Error -- Opening File: {:?}: {}", file_to_hash.path(), e);
+            return None;
+        }
+    };
+
+    // Streaming keeps memory flat: a sync of a large tree used to hold whole
+    // files in a `Vec` just to compare them.
+    let mut hasher = SeaHasher::new();
+
+    match io::copy(&mut file, &mut HasherWriter(&mut hasher)) {
+        Ok(_) => Some(hasher.finish()),
+        Err(e) => {
+            error!("Error -- Hashing: {:?}: {}", file_to_hash.path(), e);
+            None
+        }
+    }
+}
+
+/// Adapts a `Hasher` to `io::Write`, so a file can be hashed as it is read
+struct HasherWriter<'a, H: Hasher>(&'a mut H);
+
+impl<H: Hasher> Write for HasherWriter<'_, H> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -443,24 +569,21 @@ fn get_all_files_helper(src: &Path, base: &str) -> Result<FileSets, io::Error> {
     let mut symlinks = HashSet::new();
 
     for file in dir {
-        if file.is_err() {
-            error!("{}", file.err().unwrap());
-            continue;
-        }
+        let file = match file {
+            Ok(file) => file,
+            Err(e) => {
+                error!("Error -- Reading entry of {:?}: {}", src, e);
+                continue;
+            }
+        };
 
-        let file = file.unwrap();
-        let metadata = file.metadata();
-
-        if metadata.is_err() {
-            error!(
-                "Error -- Reading metadata of {:?} {}",
-                file.path(),
-                metadata.err().unwrap()
-            );
-            continue;
-        }
-
-        let metadata = metadata.unwrap();
+        let metadata = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                error!("Error -- Reading metadata of {:?}: {}", file.path(), e);
+                continue;
+            }
+        };
 
         let path = file.path();
         // This is safe to unwrap, since `get_all_files` always calls this helper
@@ -979,8 +1102,8 @@ mod test_delete_files {
             file_set.insert(file);
         }
 
-        delete_files(files_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(files_to_delete_sequential, TEST_DIR);
+        delete_files(files_to_delete.par_iter(), TEST_DIR).unwrap();
+        delete_files_sequential(files_to_delete_sequential, TEST_DIR).unwrap();
 
         assert_eq!(
             get_all_files(TEST_DIR).unwrap(),
@@ -1042,10 +1165,32 @@ mod test_delete_files {
         links_to_delete.insert(link.clone());
         links_to_delete_sequential.push(&link);
 
-        delete_files(files_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(files_to_delete_sequential, TEST_DIR_SEQ);
-        delete_files(links_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(links_to_delete_sequential, TEST_DIR_SEQ);
+        // `file1.txt/a` is below a file and `filea` has no such link, so both
+        // deletes fail - and are reported. The valid entries stay untouched.
+        let error = delete_files(files_to_delete.par_iter(), TEST_DIR)
+            .expect_err("deleting a path below a file fails");
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
+        let error = delete_files_sequential(files_to_delete_sequential, TEST_DIR_SEQ)
+            .expect_err("deleting a path below a file fails");
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
+        let error = delete_files(links_to_delete.par_iter(), TEST_DIR)
+            .expect_err("deleting a missing symlink fails");
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
+        let error = delete_files_sequential(links_to_delete_sequential, TEST_DIR_SEQ)
+            .expect_err("deleting a missing symlink fails");
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
 
         assert_eq!(
             get_all_files(TEST_DIR).unwrap(),
@@ -1108,10 +1253,10 @@ mod test_delete_files {
         links_to_delete.insert(link.clone());
         links_to_delete_sequential.push(&link);
 
-        delete_files(files_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(files_to_delete_sequential, TEST_DIR_SEQ);
-        delete_files(links_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(links_to_delete_sequential, TEST_DIR_SEQ);
+        delete_files(files_to_delete.par_iter(), TEST_DIR).unwrap();
+        delete_files_sequential(files_to_delete_sequential, TEST_DIR_SEQ).unwrap();
+        delete_files(links_to_delete.par_iter(), TEST_DIR).unwrap();
+        delete_files_sequential(links_to_delete_sequential, TEST_DIR_SEQ).unwrap();
 
         assert_eq!(
             get_all_files(TEST_DIR).unwrap(),
@@ -1161,8 +1306,20 @@ mod test_delete_files {
         dirs_to_delete_sequential.push(&dir0);
         dirs_to_delete_sequential.push(&dir2);
 
-        delete_files(dirs_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(dirs_to_delete_sequential, TEST_DIR_SEQ);
+        // `dir0` still holds `dir1`, so removing it fails and is reported;
+        // `dir2` is removed all the same.
+        let error = delete_files(dirs_to_delete.par_iter(), TEST_DIR)
+            .expect_err("removing a directory that still holds a subdirectory fails");
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
+        let error = delete_files_sequential(dirs_to_delete_sequential, TEST_DIR_SEQ)
+            .expect_err("removing a directory that still holds a subdirectory fails");
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
 
         file_set.insert(Dir {
             path: PathBuf::from(TEST_SUB_DIRS[0]),
@@ -1206,7 +1363,7 @@ mod test_copy_files {
         fs::create_dir_all(TEST_DIR).unwrap();
         fs::create_dir_all(TEST_DIR_OUT).unwrap();
 
-        copy_files(HashSet::<File>::new().par_iter(), TEST_DIR, TEST_DIR_OUT);
+        copy_files(HashSet::<File>::new().par_iter(), TEST_DIR, TEST_DIR_OUT).unwrap();
 
         assert_eq!(
             get_all_files(TEST_DIR_OUT).unwrap(),
@@ -1232,12 +1389,14 @@ mod test_copy_files {
             get_all_files(TEST_DIR).unwrap().dirs().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
+        )
+        .unwrap();
         copy_files(
             get_all_files(TEST_DIR).unwrap().files().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             get_all_files(TEST_DIR_OUT).unwrap(),
@@ -1283,12 +1442,17 @@ mod test_copy_files {
             get_all_files(TEST_DIR).unwrap().dirs().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
-        copy_files(
+        )
+        .unwrap();
+        // The destination files are read-only, so every copy into them fails and
+        // the run reports it instead of exiting 0.
+        let error = copy_files(
             get_all_files(TEST_DIR).unwrap().files().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
+        )
+        .expect_err("copying over a file with no write permission fails");
+        assert!(error.to_string().contains("failed to copy"), "{error}");
 
         let mut files = HashSet::new();
         files.insert(File {
@@ -1356,12 +1520,15 @@ mod test_copy_files {
             get_all_files(TEST_DIR).unwrap().dirs().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
-        copy_files(
+        )
+        .unwrap();
+        let error = copy_files(
             get_all_files(TEST_DIR).unwrap().files().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
+        )
+        .expect_err("copying a file with no read permission fails");
+        assert!(error.to_string().contains("failed to copy"), "{error}");
 
         let files = HashSet::new();
         let mut dirs = HashSet::new();
@@ -1405,7 +1572,8 @@ mod test_copy_files {
             get_all_files(TEST_DIR).unwrap().symlinks().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
+        )
+        .unwrap();
 
         let mut links_set = HashSet::new();
         links_set.insert(Symlink {
@@ -1444,7 +1612,8 @@ mod test_copy_files {
             get_all_files(TEST_DIR).unwrap().symlinks().par_iter(),
             TEST_DIR,
             TEST_DIR_OUT,
-        );
+        )
+        .unwrap();
 
         let mut links_set = HashSet::new();
         links_set.insert(Symlink {
@@ -1504,9 +1673,10 @@ mod test_compare_and_copy_files {
             TEST_DIR,
             TEST_DIR_OUT,
             Flag::empty(),
-        );
+        )
+        .unwrap();
 
-        compare_and_copy_files(files_to_compare.par_iter(), TEST_DIR, TEST_DIR_OUT, flags);
+        compare_and_copy_files(files_to_compare.par_iter(), TEST_DIR, TEST_DIR_OUT, flags).unwrap();
 
         let actual = fs::read([TEST_DIR_OUT, "main.rs"].join("/")).unwrap();
         let expected = fs::read([TEST_DIR, "main.rs"].join("/")).unwrap();
@@ -1535,7 +1705,8 @@ mod test_compare_and_copy_files {
             TEST_DIR,
             TEST_DIR_OUT,
             Flag::empty(),
-        );
+        )
+        .unwrap();
 
         let actual = fs::read([TEST_DIR_OUT, "main.rs"].join("/")).unwrap();
         let expected = fs::read([TEST_DIR, "main.rs"].join("/")).unwrap();
@@ -1543,5 +1714,99 @@ mod test_compare_and_copy_files {
         assert_eq!(actual, expected);
 
         fs::remove_dir_all(TEST_DIR_OUT).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod test_hashing_and_failures {
+    use super::*;
+
+    /// A scratch directory under the system temp dir, removed when dropped
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join("lms_file_ops_tests").join(name);
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Scratch(path)
+        }
+
+        fn location(&self) -> String {
+            self.0.to_string_lossy().to_string()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn hash_file_matches_the_one_shot_hash() {
+        let scratch = Scratch::new("hash_file_matches_the_one_shot_hash");
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        fs::write(scratch.0.join("data.bin"), &data).unwrap();
+
+        let file = File::from("data.bin", data.len() as u64);
+
+        assert_eq!(
+            hash_file(&file, &scratch.location()),
+            Some(seahash::hash(&data))
+        );
+    }
+
+    #[test]
+    fn streaming_hash_ignores_chunk_boundaries() {
+        let data: Vec<u8> = (0..1_000u32).map(|i| (i % 251) as u8).collect();
+
+        let mut hasher = SeaHasher::new();
+        for chunk in data.chunks(7) {
+            hasher.write(chunk);
+        }
+
+        assert_eq!(hasher.finish(), seahash::hash(&data));
+    }
+
+    #[test]
+    fn hash_file_is_none_for_a_missing_file() {
+        let scratch = Scratch::new("hash_file_is_none_for_a_missing_file");
+        let missing = File::from("missing.bin", 0);
+
+        assert_eq!(hash_file(&missing, &scratch.location()), None);
+    }
+
+    #[test]
+    fn delete_files_reports_a_delete_that_did_not_happen() {
+        let scratch = Scratch::new("delete_files_reports_a_delete_that_did_not_happen");
+        let missing = File::from("missing.txt", 0);
+
+        let error = delete_files(vec![&missing].into_par_iter(), &scratch.location())
+            .expect_err("deleting a missing file must not be reported as success");
+
+        assert!(
+            error.to_string().contains("failed to delete 1 entries"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn copy_files_reports_a_copy_that_did_not_happen() {
+        let src = Scratch::new("copy_files_reports_a_copy_that_did_not_happen");
+        let dest = Scratch::new("copy_files_reports_a_copy_that_did_not_happen_out");
+        let missing = File::from("missing.txt", 0);
+
+        let error = copy_files(
+            vec![&missing].into_par_iter(),
+            &src.location(),
+            &dest.location(),
+        )
+        .expect_err("copying a missing file must not be reported as success");
+
+        assert!(
+            error.to_string().contains("failed to copy 1 entries"),
+            "{error}"
+        );
     }
 }
