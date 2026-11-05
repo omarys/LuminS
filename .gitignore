@@ -127,3 +127,8 @@ Cargo.lock
 **/*.rs.bk
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,linux,intellij
+
+# openlore analysis artifacts
+.openlore/
+.unipi/
+openspec/
