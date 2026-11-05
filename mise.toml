@@ -3,6 +3,7 @@
 #   mise install     # fetch the pinned Rust toolchain
 #   mise run setup   # add rustfmt/clippy, the MSRV toolchain, and git hooks
 #   mise run check   # everything CI gates on
+#   mise run install # build the release binary into ~/.cargo/bin
 #
 # See .github/workflows/CI.yml for the same commands as run remotely.
 
@@ -73,8 +74,16 @@ description = "Run the CLI, e.g. mise run run -- sync ./src ./dest"
 run = "cargo run --locked -- {{arg(name='args', var=true)}}"
 
 [tasks.install]
-description = "Install lms into ~/.cargo/bin"
-run = "cargo install --locked --path ."
+description = "Build the release binary and install it into ~/.cargo/bin"
+run = """
+cargo install --locked --path .
+bin_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
+echo "installed $bin_dir/lms ($("$bin_dir/lms" --version))"
+case ":$PATH:" in
+  *":$bin_dir:"*) ;;
+  *) echo "warning: $bin_dir is not on PATH" >&2 ;;
+esac
+"""
 
 [tasks.doc]
 description = "Build the API documentation"
