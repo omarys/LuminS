@@ -29,4 +29,3 @@ bitflags = "2.13.2"
 [profile.release]
 # Symbols are kept so a panic in the release binary still yields a usable backtrace.
 lto = true
-
