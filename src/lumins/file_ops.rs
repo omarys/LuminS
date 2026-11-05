@@ -69,10 +69,14 @@ impl File {
 
         let src_file = fs::File::open(src)?;
         let mut src_reader = BufReader::with_capacity(CHUNK_SIZE, &src_file);
+        // `truncate` is deliberately left off: the writer reads back the region
+        // it has not overwritten yet, and `set_len` below is what resizes the
+        // file rather than truncating it up front.
         let dest_file = OpenOptions::new()
             .write(true)
             .read(true)
             .create(true)
+            .truncate(false)
             .open(dest)?;
         dest_file.set_len(src_file.metadata()?.len())?;
         let mut dest_reader = BufReader::with_capacity(CHUNK_SIZE, &dest_file);

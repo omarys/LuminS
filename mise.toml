@@ -44,9 +44,9 @@ description = "Verify formatting without changing files"
 run = "cargo fmt --all --check"
 
 [tasks.lint]
-description = "Run clippy, gated on correctness lints (as CI does)"
+description = "Run clippy, gated on correctness and suspicious lints (as CI does)"
 alias = "l"
-run = "cargo clippy --locked --all-targets -- -D clippy::correctness"
+run = "cargo clippy --locked --all-targets -- -D clippy::correctness -D clippy::suspicious"
 
 [tasks.check]
 description = "Run everything CI gates on: formatting, clippy, build, tests"

@@ -47,9 +47,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
       # The crate still carries a backlog of style lints, so the gate is limited
-      # to correctness lints: those are the ones that indicate real bugs.
+      # to correctness and suspicious lints: those are the ones that indicate
+      # real bugs rather than a house style.
       - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D clippy::correctness
+        run: cargo clippy --locked --all-targets -- -D clippy::correctness -D clippy::suspicious
 
   msrv:
     name: MSRV (1.85)

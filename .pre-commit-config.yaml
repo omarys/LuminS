@@ -31,8 +31,8 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy
-        description: Clippy gated on correctness lints, matching the CI lint job
-        entry: cargo clippy --locked --all-targets -- -D clippy::correctness
+        description: Clippy gated on correctness and suspicious lints, matching the CI lint job
+        entry: cargo clippy --locked --all-targets -- -D clippy::correctness -D clippy::suspicious
         language: system
         files: '\.rs$'
         pass_filenames: false
