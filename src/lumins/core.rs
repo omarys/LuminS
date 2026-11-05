@@ -22,13 +22,13 @@ use crate::progress::{self, PROGRESS_BAR};
 /// * `dest` is an invalid directory
 pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> {
     // Retrieve data from src directory about files, dirs, symlinks
-    let src_file_sets = file_ops::get_all_files(&src)?;
+    let src_file_sets = file_ops::get_all_files(src)?;
     let src_files = src_file_sets.files();
     let src_dirs = src_file_sets.dirs();
     let src_symlinks = src_file_sets.symlinks();
 
     // Retrieve data from dest directory about files, dirs, symlinks
-    let dest_file_sets = file_ops::get_all_files(&dest)?;
+    let dest_file_sets = file_ops::get_all_files(dest)?;
     let dest_files = dest_file_sets.files();
     let dest_dirs = dest_file_sets.dirs();
     let dest_symlinks = dest_file_sets.symlinks();
@@ -59,8 +59,8 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
             .par_iter()
             .filter(|file| !src_files.contains(*file));
 
-        file_ops::delete_files(symlinks_to_delete, &dest);
-        file_ops::delete_files(files_to_delete, &dest);
+        file_ops::delete_files(symlinks_to_delete, dest);
+        file_ops::delete_files(files_to_delete, dest);
     }
 
     let dirs_to_copy = src_dirs.par_iter().filter(|dir| !dest_dirs.contains(*dir));
@@ -74,16 +74,16 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
         .par_iter()
         .filter(|file| dest_files.contains(*file));
 
-    file_ops::copy_files(dirs_to_copy, &src, &dest);
-    file_ops::copy_files(symlinks_to_copy, &src, &dest);
-    file_ops::copy_files(files_to_copy, &src, &dest);
-    file_ops::compare_and_copy_files(files_to_compare, &src, &dest, flags);
+    file_ops::copy_files(dirs_to_copy, src, dest);
+    file_ops::copy_files(symlinks_to_copy, src, dest);
+    file_ops::copy_files(files_to_copy, src, dest);
+    file_ops::compare_and_copy_files(files_to_compare, src, dest, flags);
 
     // Delete dirs in the correct order
     if delete {
         let dirs_to_delete = dest_dirs.par_iter().filter(|dir| !src_dirs.contains(*dir));
         let dirs_to_delete: Vec<&file_ops::Dir> = file_ops::sort_files(dirs_to_delete);
-        file_ops::delete_files_sequential(dirs_to_delete, &dest);
+        file_ops::delete_files_sequential(dirs_to_delete, dest);
     }
 
     Ok(())
@@ -103,7 +103,7 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<(), io::Error> 
 /// * `dest` is an invalid directory
 pub fn copy(src: &str, dest: &str, _flags: Flag) -> Result<(), io::Error> {
     // Retrieve data from src directory about files, dirs, symlinks
-    let src_file_sets = file_ops::get_all_files(&src)?;
+    let src_file_sets = file_ops::get_all_files(src)?;
     let src_files = src_file_sets.files();
     let src_dirs = src_file_sets.dirs();
     let src_symlinks = src_file_sets.symlinks();
@@ -112,9 +112,9 @@ pub fn copy(src: &str, dest: &str, _flags: Flag) -> Result<(), io::Error> {
     progress::progress_init((src_files.len() + src_dirs.len() + src_symlinks.len()) as u64);
 
     // Copy everything
-    file_ops::copy_files(src_dirs.into_par_iter(), &src, &dest);
-    file_ops::copy_files(src_files.into_par_iter(), &src, &dest);
-    file_ops::copy_files(src_symlinks.into_par_iter(), &src, &dest);
+    file_ops::copy_files(src_dirs.into_par_iter(), src, dest);
+    file_ops::copy_files(src_files.into_par_iter(), src, dest);
+    file_ops::copy_files(src_symlinks.into_par_iter(), src, dest);
 
     Ok(())
 }
@@ -131,7 +131,7 @@ pub fn copy(src: &str, dest: &str, _flags: Flag) -> Result<(), io::Error> {
 /// * `target` is an invalid directory
 pub fn remove(target: &str, _flags: Flag) -> Result<(), io::Error> {
     // Retrieve data from target directory about files, dirs, symlinks
-    let target_file_sets = file_ops::get_all_files(&target)?;
+    let target_file_sets = file_ops::get_all_files(target)?;
     let target_files = target_file_sets.files();
     let target_dirs = target_file_sets.dirs();
     let target_symlinks = target_file_sets.symlinks();
@@ -143,8 +143,8 @@ pub fn remove(target: &str, _flags: Flag) -> Result<(), io::Error> {
     PROGRESS_BAR.enable_steady_tick(Duration::from_millis(1000));
 
     // Delete everything
-    file_ops::delete_files(target_files.into_par_iter(), &target);
-    file_ops::delete_files(target_symlinks.into_par_iter(), &target);
+    file_ops::delete_files(target_files.into_par_iter(), target);
+    file_ops::delete_files(target_symlinks.into_par_iter(), target);
 
     // Directories must always be deleted sequentially so that they are deleted in the correct order
     let mut target_dirs: Vec<&file_ops::Dir> = file_ops::sort_files(target_dirs.into_par_iter());
@@ -153,7 +153,7 @@ pub fn remove(target: &str, _flags: Flag) -> Result<(), io::Error> {
     let root_dir = Dir::from("");
     target_dirs.push(&root_dir);
 
-    file_ops::delete_files_sequential(target_dirs.into_iter(), &target);
+    file_ops::delete_files_sequential(target_dirs, target);
 
     Ok(())
 }
@@ -176,12 +176,12 @@ mod test_synchronize {
 
     #[test]
     fn invalid_src() {
-        assert_eq!(synchronize("/?", "src", Flag::empty()).is_err(), true);
+        assert!(synchronize("/?", "src", Flag::empty()).is_err());
     }
 
     #[test]
     fn invalid_dest() {
-        assert_eq!(synchronize("src", "/?", Flag::empty()).is_err(), true);
+        assert!(synchronize("src", "/?", Flag::empty()).is_err());
     }
 
     #[cfg(target_family = "unix")]
@@ -190,14 +190,14 @@ mod test_synchronize {
         const TEST_DIR: &str = "test_synchronize_dir1";
         fs::create_dir_all(TEST_DIR).unwrap();
 
-        assert_eq!(synchronize("src", TEST_DIR, Flag::empty()).is_ok(), true);
+        assert!(synchronize("src", TEST_DIR, Flag::empty()).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", "src", TEST_DIR])
+            .args(["-r", "src", TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DIR).unwrap();
     }
@@ -208,39 +208,33 @@ mod test_synchronize {
         const TEST_DIR: &str = "test_synchronize_dir2";
         fs::create_dir_all(TEST_DIR).unwrap();
 
-        assert_eq!(
-            synchronize(BUILD_DIR, TEST_DIR, Flag::empty()).is_ok(),
-            true
-        );
+        assert!(synchronize(BUILD_DIR, TEST_DIR, Flag::empty()).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", BUILD_DIR, TEST_DIR])
+            .args(["-r", BUILD_DIR, TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::File::create([BUILD_DIR, "file.txt"].join("/")).unwrap();
         fs::remove_dir_all([BUILD_DIR, "build"].join("/")).unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", BUILD_DIR, TEST_DIR])
+            .args(["-r", BUILD_DIR, TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), false);
+        assert!(!diff.status.success());
 
-        assert_eq!(
-            synchronize(BUILD_DIR, TEST_DIR, Flag::empty()).is_ok(),
-            true
-        );
+        assert!(synchronize(BUILD_DIR, TEST_DIR, Flag::empty()).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", BUILD_DIR, TEST_DIR])
+            .args(["-r", BUILD_DIR, TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DIR).unwrap();
     }
@@ -259,23 +253,20 @@ mod test_synchronize {
         symlink("../Cargo.toml", [TEST_DEST, "file"].join("/")).unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_SRC, TEST_DEST])
+            .args(["-r", TEST_SRC, TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), false);
+        assert!(!diff.status.success());
 
-        assert_eq!(
-            synchronize(TEST_SRC, TEST_DEST, Flag::empty()).is_ok(),
-            true
-        );
+        assert!(synchronize(TEST_SRC, TEST_DEST, Flag::empty()).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_SRC, TEST_DEST])
+            .args(["-r", TEST_SRC, TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DEST).unwrap();
         fs::remove_dir_all(TEST_SRC).unwrap();
@@ -297,10 +288,7 @@ mod test_synchronize {
         fs::File::create([TEST_DIR_EXPECTED, TEST_FILES[0]].join("/")).unwrap();
         fs::File::create([TEST_DIR_EXPECTED, TEST_FILES[1]].join("/")).unwrap();
 
-        assert_eq!(
-            synchronize(TEST_DIR, TEST_DIR_OUT, Flag::empty()).is_ok(),
-            true
-        );
+        assert!(synchronize(TEST_DIR, TEST_DIR_OUT, Flag::empty()).is_ok());
 
         fs::File::create([TEST_DIR, TEST_FILES[1]].join("/")).unwrap();
 
@@ -310,14 +298,14 @@ mod test_synchronize {
         flags.insert(Flag::SECURE);
         flags.insert(Flag::SEQUENTIAL);
 
-        assert_eq!(synchronize(TEST_DIR, TEST_DIR_OUT, flags).is_ok(), true);
+        assert!(synchronize(TEST_DIR, TEST_DIR_OUT, flags).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_DIR_OUT, TEST_DIR_EXPECTED])
+            .args(["-r", TEST_DIR_OUT, TEST_DIR_EXPECTED])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DIR).unwrap();
         fs::remove_dir_all(TEST_DIR_OUT).unwrap();
@@ -333,13 +321,13 @@ mod test_copy {
 
     #[test]
     fn invalid_src() {
-        assert_eq!(copy("/?", "src", Flag::empty()).is_err(), true);
+        assert!(copy("/?", "src", Flag::empty()).is_err());
     }
 
     #[test]
     fn invalid_dest() {
         const TEST_DIR: &str = "test_copy_invalid_dest";
-        assert_eq!(copy("src", TEST_DIR, Flag::empty()).is_ok(), true);
+        assert!(copy("src", TEST_DIR, Flag::empty()).is_ok());
         fs::remove_dir_all(TEST_DIR).unwrap();
     }
 
@@ -349,14 +337,14 @@ mod test_copy {
         const TEST_DIR: &str = "test_copy_dir1";
         fs::create_dir_all(TEST_DIR).unwrap();
 
-        assert_eq!(copy("src", TEST_DIR, Flag::empty()).is_ok(), true);
+        assert!(copy("src", TEST_DIR, Flag::empty()).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", "src", TEST_DIR])
+            .args(["-r", "src", TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DIR).unwrap();
     }
@@ -370,14 +358,14 @@ mod test_copy {
         let mut flags = Flag::empty();
         flags.insert(Flag::SEQUENTIAL);
 
-        assert_eq!(copy("src", TEST_DIR, flags).is_ok(), true);
+        assert!(copy("src", TEST_DIR, flags).is_ok());
 
         let diff = Command::new("diff")
-            .args(&["-r", "src", TEST_DIR])
+            .args(["-r", "src", TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DIR).unwrap();
     }
@@ -397,7 +385,7 @@ mod test_remove {
 
     #[test]
     fn invalid_target() {
-        assert_eq!(remove("/?", Flag::empty()).is_err(), true);
+        assert!(remove("/?", Flag::empty()).is_err());
     }
 
     #[cfg(target_family = "unix")]
@@ -407,13 +395,13 @@ mod test_remove {
         fs::create_dir_all(TEST_DIR).unwrap();
 
         Command::new("cp")
-            .args(&["-r", BUILD_DIR, TEST_DIR])
+            .args(["-r", BUILD_DIR, TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(remove(TEST_DIR, Flag::empty()).is_ok(), true);
+        assert!(remove(TEST_DIR, Flag::empty()).is_ok());
 
-        assert_eq!(fs::read_dir(TEST_DIR).is_err(), true);
+        assert!(fs::read_dir(TEST_DIR).is_err());
     }
 
     #[cfg(target_family = "unix")]
@@ -426,12 +414,12 @@ mod test_remove {
         flags.insert(Flag::SEQUENTIAL);
 
         Command::new("cp")
-            .args(&["-r", "src", TEST_DIR])
+            .args(["-r", "src", TEST_DIR])
             .output()
             .unwrap();
 
-        assert_eq!(remove(TEST_DIR, flags).is_ok(), true);
+        assert!(remove(TEST_DIR, flags).is_ok());
 
-        assert_eq!(fs::read_dir(TEST_DIR).is_err(), true);
+        assert!(fs::read_dir(TEST_DIR).is_err());
     }
 }

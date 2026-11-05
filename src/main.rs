@@ -144,8 +144,7 @@ fn main() {
         SubCommandType::Remove => sub_command
             .dest
             .iter()
-            .map(|dest| core::remove(dest, flags))
-            .collect(),
+            .try_for_each(|dest| core::remove(dest, flags)),
         SubCommandType::Synchronize => {
             core::synchronize(sub_command.src.unwrap(), &sub_command.dest[0], flags)
         }
@@ -179,65 +178,65 @@ mod test_main {
     #[test]
     fn test_no_args() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
         let output = Command::new("target/release/lms").output().unwrap();
 
-        assert_eq!(output.status.success(), false);
+        assert!(!output.status.success());
     }
 
     #[test]
     fn test_no_dest() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
         let output = Command::new("target/release/lms")
-            .args(&["sync", "src"])
+            .args(["sync", "src"])
             .output()
             .unwrap();
 
-        assert_eq!(output.status.success(), false);
+        assert!(!output.status.success());
     }
 
     #[test]
     fn test_too_many_args() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
         let output = Command::new("target/release/lms")
-            .args(&["sync", "src", "dest", "dest"])
+            .args(["sync", "src", "dest", "dest"])
             .output()
             .unwrap();
 
-        assert_eq!(output.status.success(), false);
+        assert!(!output.status.success());
     }
 
     #[test]
     fn test_invalid_args() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
         let output = Command::new("target/release/lms")
-            .args(&["sync", "a", "dest"])
+            .args(["sync", "a", "dest"])
             .output()
             .unwrap();
 
-        assert_eq!(output.status.success(), false);
+        assert!(!output.status.success());
     }
 
     #[cfg(target_family = "unix")]
     #[test]
     fn test_copy() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -245,16 +244,16 @@ mod test_main {
         const TEST_DEST: &str = "test_main_test_copy";
 
         Command::new("target/release/lms")
-            .args(&["cp", "-v", TEST_SOURCE, TEST_DEST])
+            .args(["cp", "-v", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_SOURCE, TEST_DEST])
+            .args(["-r", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DEST).unwrap();
     }
@@ -263,7 +262,7 @@ mod test_main {
     #[test]
     fn test_secure() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -272,16 +271,16 @@ mod test_main {
         fs::create_dir_all(TEST_DEST).unwrap();
 
         Command::new("target/release/lms")
-            .args(&["sync", "-s", TEST_SOURCE, TEST_DEST])
+            .args(["sync", "-s", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_SOURCE, TEST_DEST])
+            .args(["-r", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DEST).unwrap();
     }
@@ -290,7 +289,7 @@ mod test_main {
     #[test]
     fn test_sequential() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -298,16 +297,16 @@ mod test_main {
         const TEST_DEST: &str = "test_main_test_sequential";
 
         Command::new("target/release/lms")
-            .args(&["sync", "-S", TEST_SOURCE, TEST_DEST])
+            .args(["sync", "-S", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_SOURCE, TEST_DEST])
+            .args(["-r", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DEST).unwrap();
     }
@@ -316,7 +315,7 @@ mod test_main {
     #[test]
     fn test_sequential_copy() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -324,16 +323,16 @@ mod test_main {
         const TEST_DEST: &str = "test_main_test_sequential_copy";
 
         Command::new("target/release/lms")
-            .args(&["cp", "-S", TEST_SOURCE, TEST_DEST])
+            .args(["cp", "-S", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_SOURCE, TEST_DEST])
+            .args(["-r", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_DEST).unwrap();
     }
@@ -342,7 +341,7 @@ mod test_main {
     #[test]
     fn test_no_delete() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -363,21 +362,21 @@ mod test_main {
         fs::copy(TEST_FILE2, [TEST_EXPECTED, TEST_FILE2].join("/")).unwrap();
 
         Command::new("target/release/lms")
-            .args(&["cp", TEST_SOURCE1, TEST_DEST])
+            .args(["cp", TEST_SOURCE1, TEST_DEST])
             .output()
             .unwrap();
 
         Command::new("target/release/lms")
-            .args(&["sync", "-n", TEST_SOURCE2, TEST_DEST])
+            .args(["sync", "-n", TEST_SOURCE2, TEST_DEST])
             .output()
             .unwrap();
 
         let diff = Command::new("diff")
-            .args(&["-r", TEST_DEST, TEST_EXPECTED])
+            .args(["-r", TEST_DEST, TEST_EXPECTED])
             .output()
             .unwrap();
 
-        assert_eq!(diff.status.success(), true);
+        assert!(diff.status.success());
 
         fs::remove_dir_all(TEST_SOURCE1).unwrap();
         fs::remove_dir_all(TEST_SOURCE2).unwrap();
@@ -389,7 +388,7 @@ mod test_main {
     #[test]
     fn test_remove() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -398,23 +397,23 @@ mod test_main {
         fs::create_dir_all(TEST_DEST).unwrap();
 
         Command::new("cp")
-            .args(&["-r", TEST_SOURCE, TEST_DEST])
+            .args(["-r", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
         Command::new("target/release/lms")
-            .args(&["rm", TEST_DEST])
+            .args(["rm", TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(fs::read_dir(TEST_DEST).is_err(), true);
+        assert!(fs::read_dir(TEST_DEST).is_err());
     }
 
     #[cfg(target_family = "unix")]
     #[test]
     fn test_remove_multiple() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -424,29 +423,29 @@ mod test_main {
         fs::create_dir_all(TEST_DEST[1]).unwrap();
 
         Command::new("cp")
-            .args(&["-r", TEST_SOURCE, TEST_DEST[0]])
+            .args(["-r", TEST_SOURCE, TEST_DEST[0]])
             .output()
             .unwrap();
 
         Command::new("cp")
-            .args(&["-r", TEST_SOURCE, TEST_DEST[1]])
+            .args(["-r", TEST_SOURCE, TEST_DEST[1]])
             .output()
             .unwrap();
 
         Command::new("target/release/lms")
-            .args(&["rm", TEST_DEST[0], TEST_DEST[1]])
+            .args(["rm", TEST_DEST[0], TEST_DEST[1]])
             .output()
             .unwrap();
 
-        assert_eq!(fs::read_dir(TEST_DEST[0]).is_err(), true);
-        assert_eq!(fs::read_dir(TEST_DEST[1]).is_err(), true);
+        assert!(fs::read_dir(TEST_DEST[0]).is_err());
+        assert!(fs::read_dir(TEST_DEST[1]).is_err());
     }
 
     #[cfg(target_family = "unix")]
     #[test]
     fn test_sequential_remove() {
         Command::new("cargo")
-            .args(&["build", "--release"])
+            .args(["build", "--release"])
             .output()
             .unwrap();
 
@@ -455,15 +454,15 @@ mod test_main {
         fs::create_dir_all(TEST_DEST).unwrap();
 
         Command::new("cp")
-            .args(&["-r", TEST_SOURCE, TEST_DEST])
+            .args(["-r", TEST_SOURCE, TEST_DEST])
             .output()
             .unwrap();
 
         Command::new("target/release/lms")
-            .args(&["rm", "-S", TEST_DEST])
+            .args(["rm", "-S", TEST_DEST])
             .output()
             .unwrap();
 
-        assert_eq!(fs::read_dir(TEST_DEST).is_err(), true);
+        assert!(fs::read_dir(TEST_DEST).is_err());
     }
 }

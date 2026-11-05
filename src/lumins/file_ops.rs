@@ -37,13 +37,13 @@ impl FileOps for File {
         &self.path
     }
     fn remove(&self, path: &PathBuf) {
-        match fs::remove_file(&path) {
+        match fs::remove_file(path) {
             Ok(_) => info!("Deleting file {:?}", path),
             Err(e) => error!("Error -- Deleting file {:?}: {}", path, e),
         }
     }
     fn copy(&self, src: &PathBuf, dest: &PathBuf) {
-        match fs::copy(&src, &dest) {
+        match fs::copy(src, dest) {
             Ok(_) => info!("Copying file {:?} -> {:?}", src, dest),
             Err(e) => error!("Error -- Copying file {:?}: {}", src, e),
         }
@@ -62,18 +62,18 @@ impl File {
     #[allow(clippy::unused_io_amount)]
     fn diff_copy(src: &PathBuf, dest: &PathBuf) -> Result<(), io::Error> {
         if !Path::new(&dest).exists() {
-            fs::copy(&src, &dest)?;
+            fs::copy(src, dest)?;
         }
 
         const CHUNK_SIZE: usize = 10000;
 
-        let src_file = fs::File::open(&src)?;
+        let src_file = fs::File::open(src)?;
         let mut src_reader = BufReader::with_capacity(CHUNK_SIZE, &src_file);
         let dest_file = OpenOptions::new()
             .write(true)
             .read(true)
             .create(true)
-            .open(&dest)?;
+            .open(dest)?;
         dest_file.set_len(src_file.metadata()?.len())?;
         let mut dest_reader = BufReader::with_capacity(CHUNK_SIZE, &dest_file);
         let mut dest_writer = BufWriter::with_capacity(CHUNK_SIZE, &dest_file);
@@ -109,13 +109,13 @@ impl FileOps for Dir {
         &self.path
     }
     fn remove(&self, path: &PathBuf) {
-        match fs::remove_dir(&path) {
+        match fs::remove_dir(path) {
             Ok(_) => info!("Deleting dir {:?}", path),
             Err(e) => error!("Error -- Deleting dir {:?}: {}", path, e),
         }
     }
     fn copy(&self, _src: &PathBuf, dest: &PathBuf) {
-        match fs::create_dir_all(&dest) {
+        match fs::create_dir_all(dest) {
             Ok(_) => info!("Creating dir {:?}", dest),
             Err(e) => error!("Error -- Creating dir {:?}: {}", dest, e),
         }
@@ -142,7 +142,7 @@ impl FileOps for Symlink {
         &self.path
     }
     fn remove(&self, path: &PathBuf) {
-        match fs::remove_file(&path) {
+        match fs::remove_file(path) {
             Ok(_) => info!("Deleting symlink {:?}", path),
             Err(e) => error!("Error -- Deleting symlink {:?}: {}", path, e),
         }
@@ -151,7 +151,7 @@ impl FileOps for Symlink {
     fn copy(&self, _src: &PathBuf, dest: &PathBuf) {
         use std::os::unix::fs;
 
-        match fs::symlink(&self.target, &dest) {
+        match fs::symlink(&self.target, dest) {
             Ok(_) => info!("Creating symlink {:?} -> {:?}", dest, self.target),
             Err(e) => error!("Error -- Creating symlink {:?}: {}", dest, e),
         }
@@ -266,30 +266,30 @@ where
     S: FileOps,
 {
     if flags.contains(Flag::SECURE) {
-        let src_file_hash_secure = hash_file_secure(file_to_compare, &src);
+        let src_file_hash_secure = hash_file_secure(file_to_compare, src);
 
         if src_file_hash_secure.is_none() {
-            copy_file(file_to_compare, &src, &dest);
+            copy_file(file_to_compare, src, dest);
             return;
         }
 
-        let dest_file_hash_secure = hash_file_secure(file_to_compare, &dest);
+        let dest_file_hash_secure = hash_file_secure(file_to_compare, dest);
 
         if src_file_hash_secure != dest_file_hash_secure {
-            copy_file(file_to_compare, &src, &dest);
+            copy_file(file_to_compare, src, dest);
         }
     } else {
-        let src_file_hash = hash_file(file_to_compare, &src);
+        let src_file_hash = hash_file(file_to_compare, src);
 
         if src_file_hash.is_none() {
-            copy_file(file_to_compare, &src, &dest);
+            copy_file(file_to_compare, src, dest);
             return;
         }
 
-        let dest_file_hash = hash_file(file_to_compare, &dest);
+        let dest_file_hash = hash_file(file_to_compare, dest);
 
         if src_file_hash != dest_file_hash {
-            copy_file(file_to_compare, &src, &dest);
+            copy_file(file_to_compare, src, dest);
         }
     }
 }
@@ -308,7 +308,7 @@ where
     S: FileOps + Sync + 'a,
 {
     files_to_copy.for_each(|file| {
-        copy_file(file, &src, &dest);
+        copy_file(file, src, dest);
         PROGRESS_BAR.inc(1);
     });
 }
@@ -470,7 +470,7 @@ where
 /// * Ok: A `FileSets` containing a set of files a set of directories
 /// * Error: If `src` is an invalid directory
 pub fn get_all_files(src: &str) -> Result<FileSets, io::Error> {
-    get_all_files_helper(&PathBuf::from(&src), &src)
+    get_all_files_helper(&PathBuf::from(&src), src)
 }
 
 /// Recursive helper for `get_all_files`
@@ -605,13 +605,13 @@ mod test_get_all_files {
 
     #[test]
     fn invalid_dir() {
-        assert_eq!(get_all_files("/?").is_err(), true);
+        assert!(get_all_files("/?").is_err());
     }
 
     #[cfg(target_family = "unix")]
     #[test]
     fn dir_insufficient_permissions() {
-        assert_eq!(get_all_files("/root").is_err(), true);
+        assert!(get_all_files("/root").is_err());
     }
 
     #[test]
@@ -635,7 +635,7 @@ mod test_get_all_files {
 
         fs::create_dir_all([TEST_DIR, TEST_SUB_DIR].join("/")).unwrap();
 
-        let file_sets = get_all_files(&TEST_DIR).unwrap();
+        let file_sets = get_all_files(TEST_DIR).unwrap();
         let mut dir_set = HashSet::new();
         dir_set.insert(Dir {
             path: PathBuf::from(&TEST_SUB_DIR),
@@ -644,7 +644,7 @@ mod test_get_all_files {
         assert_eq!(file_sets.files(), &HashSet::new());
         assert_eq!(file_sets.dirs(), &dir_set);
 
-        fs::remove_dir_all(&TEST_DIR).unwrap();
+        fs::remove_dir_all(TEST_DIR).unwrap();
     }
 
     #[test]
@@ -753,11 +753,11 @@ mod test_get_all_files {
         fs::File::create(&file_path).unwrap();
 
         Command::new("chmod")
-            .args(&["000", &file_path])
+            .args(["000", &file_path])
             .output()
             .unwrap();
         Command::new("chmod")
-            .args(&["000", &dir_path])
+            .args(["000", &dir_path])
             .output()
             .unwrap();
 
@@ -778,7 +778,7 @@ mod test_get_all_files {
 
         Command::new("chmod")
             .arg("777")
-            .args(&["777", &dir_path])
+            .args(["777", &dir_path])
             .output()
             .unwrap();
         fs::remove_dir_all(TEST_DIR).unwrap();
@@ -1027,7 +1027,7 @@ mod test_delete_files {
         }
 
         delete_files(files_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(files_to_delete_sequential.into_iter(), TEST_DIR);
+        delete_files_sequential(files_to_delete_sequential, TEST_DIR);
 
         assert_eq!(
             get_all_files(TEST_DIR).unwrap(),
@@ -1090,9 +1090,9 @@ mod test_delete_files {
         links_to_delete_sequential.push(&link);
 
         delete_files(files_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(files_to_delete_sequential.into_iter(), TEST_DIR_SEQ);
+        delete_files_sequential(files_to_delete_sequential, TEST_DIR_SEQ);
         delete_files(links_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(links_to_delete_sequential.into_iter(), TEST_DIR_SEQ);
+        delete_files_sequential(links_to_delete_sequential, TEST_DIR_SEQ);
 
         assert_eq!(
             get_all_files(TEST_DIR).unwrap(),
@@ -1156,9 +1156,9 @@ mod test_delete_files {
         links_to_delete_sequential.push(&link);
 
         delete_files(files_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(files_to_delete_sequential.into_iter(), TEST_DIR_SEQ);
+        delete_files_sequential(files_to_delete_sequential, TEST_DIR_SEQ);
         delete_files(links_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(links_to_delete_sequential.into_iter(), TEST_DIR_SEQ);
+        delete_files_sequential(links_to_delete_sequential, TEST_DIR_SEQ);
 
         assert_eq!(
             get_all_files(TEST_DIR).unwrap(),
@@ -1209,7 +1209,7 @@ mod test_delete_files {
         dirs_to_delete_sequential.push(&dir2);
 
         delete_files(dirs_to_delete.par_iter(), TEST_DIR);
-        delete_files_sequential(dirs_to_delete_sequential.into_iter(), TEST_DIR_SEQ);
+        delete_files_sequential(dirs_to_delete_sequential, TEST_DIR_SEQ);
 
         file_set.insert(Dir {
             path: PathBuf::from(TEST_SUB_DIRS[0]),
@@ -1381,11 +1381,11 @@ mod test_copy_files {
         fs::create_dir_all(TEST_DIR_OUT).unwrap();
 
         Command::new("cp")
-            .args(&["-r", "src/lumins", TEST_DIR])
+            .args(["-r", "src/lumins", TEST_DIR])
             .output()
             .unwrap();
         Command::new("cp")
-            .args(&["src/main.rs", TEST_DIR])
+            .args(["src/main.rs", TEST_DIR])
             .output()
             .unwrap();
         Command::new("chmod")
@@ -1430,12 +1430,9 @@ mod test_copy_files {
             .arg([TEST_DIR, "lumins"].join("/"))
             .output()
             .unwrap();
+        Command::new("rm").args(["-rf", TEST_DIR]).output().unwrap();
         Command::new("rm")
-            .args(&["-rf", TEST_DIR])
-            .output()
-            .unwrap();
-        Command::new("rm")
-            .args(&["-rf", TEST_DIR_OUT])
+            .args(["-rf", TEST_DIR_OUT])
             .output()
             .unwrap();
     }
