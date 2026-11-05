@@ -1,0 +1,99 @@
+# Tooling and task definitions for LuminS.
+#
+#   mise install     # fetch the pinned Rust toolchain
+#   mise run setup   # add rustfmt/clippy, the MSRV toolchain, and git hooks
+#   mise run check   # everything CI gates on
+#
+# See .github/workflows/CI.yml for the same commands as run remotely.
+
+min_version = "2026.1.0"
+
+[tools]
+# Keep in step with the `stable` toolchain used in CI. The MSRV (1.85, see
+# `rust-version` in Cargo.toml) is exercised by `mise run msrv` instead.
+rust = "1.97.1"
+
+[env]
+CARGO_TERM_COLOR = "always"
+RUST_BACKTRACE = "1"
+
+[tasks.setup]
+description = "Install toolchain components, the MSRV toolchain, and git hooks"
+run = """
+rustup component add rustfmt clippy
+rustup toolchain install 1.85.0 --profile minimal
+pre-commit install --install-hooks
+"""
+
+[tasks.build]
+description = "Build the debug binary and all test targets"
+alias = "b"
+run = "cargo build --locked --all-targets"
+
+[tasks.test]
+description = "Run the test suite"
+alias = "t"
+run = "cargo test --locked"
+
+[tasks.fmt]
+description = "Format the whole workspace"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Verify formatting without changing files"
+run = "cargo fmt --all --check"
+
+[tasks.lint]
+description = "Run clippy, gated on correctness lints (as CI does)"
+alias = "l"
+run = "cargo clippy --locked --all-targets -- -D clippy::correctness"
+
+[tasks.check]
+description = "Run everything CI gates on: formatting, clippy, build, tests"
+# Sequential on purpose: these share one cargo target directory, and mise runs
+# `depends` entries concurrently, which just makes cargo queue on its file lock.
+run = [
+  { task = "fmt-check" },
+  { task = "lint" },
+  { task = "build" },
+  { task = "test" },
+]
+
+[tasks.msrv]
+description = "Verify the crate still builds on the declared MSRV (1.85)"
+run = "cargo +1.85.0 check --locked --all-targets"
+
+[tasks.release]
+description = "Build the optimised release binary"
+alias = "r"
+run = "cargo build --locked --release"
+
+[tasks.run]
+description = "Run the CLI, e.g. mise run run -- sync ./src ./dest"
+run = "cargo run --locked -- {{arg(name='args', var=true)}}"
+
+[tasks.install]
+description = "Install lms into ~/.cargo/bin"
+run = "cargo install --locked --path ."
+
+[tasks.doc]
+description = "Build the API documentation"
+run = "cargo doc --locked --no-deps --document-private-items"
+
+[tasks.coverage]
+description = "Run the test suite under tarpaulin and emit cobertura.xml"
+run = """
+if ! command -v cargo-tarpaulin >/dev/null; then
+  echo "cargo-tarpaulin is missing: cargo install cargo-tarpaulin --locked" >&2
+  exit 1
+fi
+cargo tarpaulin --locked --timeout 300 --out xml
+"""
+
+[tasks.precommit]
+description = "Run all pre-commit hooks against every file"
+run = "pre-commit run --all-files"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "cargo clean"

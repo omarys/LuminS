@@ -1,0 +1,46 @@
+# Install with: pre-commit install --install-hooks   (or: mise run setup)
+# Run against everything: pre-commit run --all-files  (or: mise run precommit)
+minimum_pre_commit_version: "3.0.0"
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-toml
+      - id: check-yaml
+      - id: check-executables-have-shebangs
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      # Both hooks run the whole workspace rather than the staged files, so a
+      # commit cannot pass with a broken file elsewhere in the crate.
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Format the workspace (rewrites files, so the commit is aborted)
+        entry: cargo fmt --all --
+        language: system
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        description: Clippy gated on correctness lints, matching the CI lint job
+        entry: cargo clippy --locked --all-targets -- -D clippy::correctness
+        language: system
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: cargo-check-toml
+        name: cargo check --locked
+        description: The lockfile still resolves and the crate still builds
+        entry: cargo check --locked --all-targets
+        language: system
+        files: '^(Cargo\.(toml|lock)|\.cargo/|rust-toolchain)'
+        pass_filenames: false
