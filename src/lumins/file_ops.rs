@@ -1,9 +1,7 @@
 //! Contains utilities for copying, deleting, sorting, hashing files.
 
-use std::fs::OpenOptions;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::marker::Sync;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::{fs, io};
 
 use blake2::{Blake2b512, Digest};
@@ -56,49 +54,6 @@ impl File {
             path: PathBuf::from(path),
             size,
         }
-    }
-
-    #[allow(unused)]
-    #[allow(clippy::unused_io_amount)]
-    fn diff_copy(src: &PathBuf, dest: &PathBuf) -> Result<(), io::Error> {
-        if !Path::new(&dest).exists() {
-            fs::copy(src, dest)?;
-        }
-
-        const CHUNK_SIZE: usize = 10000;
-
-        let src_file = fs::File::open(src)?;
-        let mut src_reader = BufReader::with_capacity(CHUNK_SIZE, &src_file);
-        // `truncate` is deliberately left off: the writer reads back the region
-        // it has not overwritten yet, and `set_len` below is what resizes the
-        // file rather than truncating it up front.
-        let dest_file = OpenOptions::new()
-            .write(true)
-            .read(true)
-            .create(true)
-            .truncate(false)
-            .open(dest)?;
-        dest_file.set_len(src_file.metadata()?.len())?;
-        let mut dest_reader = BufReader::with_capacity(CHUNK_SIZE, &dest_file);
-        let mut dest_writer = BufWriter::with_capacity(CHUNK_SIZE, &dest_file);
-
-        loop {
-            let mut src_buffer = [0; CHUNK_SIZE];
-            let mut dest_buffer = [0; CHUNK_SIZE];
-
-            if src_reader.read(&mut src_buffer)? == 0 {
-                break;
-            }
-            dest_reader.read(&mut dest_buffer)?;
-
-            if seahash::hash(&src_buffer) != seahash::hash(&dest_buffer) {
-                dest_writer.write(&src_buffer)?;
-            } else {
-                dest_writer.seek(SeekFrom::Current(CHUNK_SIZE as i64));
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -241,9 +196,9 @@ impl FileSets {
 /// # Arguments
 /// * `files_to_compare`: files to compare
 /// * `src`: base directory of the files to copy from, such that for all `file` in
-/// `files_to_compare`, `src + file.path()` is the absolute path of the source file
+///   `files_to_compare`, `src + file.path()` is the absolute path of the source file
 /// * `dest`: base directory of the files to copy to, such that for all `file` in
-/// `files_to_compare`, `dest + file.path()` is the absolute path of the destination file
+///   `files_to_compare`, `dest + file.path()` is the absolute path of the destination file
 /// * `flags`: set for Flag's
 pub fn compare_and_copy_files<'a, T, S>(files_to_compare: T, src: &str, dest: &str, flags: Flag)
 where
@@ -261,9 +216,9 @@ where
 /// # Arguments
 /// * `file_to_compare`: file to compare
 /// * `src`: base directory of the file to copy from, such that `src + file.path()`
-/// is the absolute path of the source file
+///   is the absolute path of the source file
 /// * `dest`: base directory of the files to copy to, such that `dest + file.path()`
-/// is the absolute path of the destination file
+///   is the absolute path of the destination file
 /// * `flags`: set for Flag's
 fn compare_and_copy_file<S>(file_to_compare: &S, src: &str, dest: &str, flags: Flag)
 where
@@ -303,9 +258,9 @@ where
 /// # Arguments
 /// * `files_to_copy`: files to copy
 /// * `src`: base directory of the files to copy from, such that for all `file` in
-/// `files_to_copy`, `src + file.path()` is the absolute path of the source file
+///   `files_to_copy`, `src + file.path()` is the absolute path of the source file
 /// * `dest`: base directory of the files to copy to, such that for all `file` in
-/// `files_to_copy`, `dest + file.path()` is the absolute path of the destination file
+///   `files_to_copy`, `dest + file.path()` is the absolute path of the destination file
 pub fn copy_files<'a, T, S>(files_to_copy: T, src: &str, dest: &str)
 where
     T: ParallelIterator<Item = &'a S>,
@@ -322,9 +277,9 @@ where
 /// # Arguments
 /// * `files_to_copy`: file to copy
 /// * `src`: base directory of the files to copy from, such that `src + file_to_copy.path()`
-/// is the absolute path of the source file
+///   is the absolute path of the source file
 /// * `dest`: base directory of the files to copy to, such that `dest + file.path()`
-/// is the absolute path of the destination file
+///   is the absolute path of the destination file
 fn copy_file<S>(file_to_copy: &S, src: &str, dest: &str)
 where
     S: FileOps,
@@ -342,9 +297,9 @@ where
 /// There is no guarantee that this function will delete the files in the given order
 ///
 /// # Arguments
-/// `files_to_delete`: files to delete
+/// * `files_to_delete`: files to delete
 /// * `location`: base directory of the files to delete, such that for all `file` in
-/// `files_to_delete`, `location + file.path()` is the absolute path of the file
+///   `files_to_delete`, `location + file.path()` is the absolute path of the file
 pub fn delete_files<'a, T, S>(files_to_delete: T, location: &str)
 where
     T: ParallelIterator<Item = &'a S>,
@@ -364,7 +319,7 @@ where
 /// # Arguments
 /// * `files_to_delete`: files to delete, or sorted empty directories
 /// * `location`: base directory of the files to delete, such that for all `file` in
-/// `files_to_delete`, `location + file.path()` is the absolute path of the file
+///   `files_to_delete`, `location + file.path()` is the absolute path of the file
 pub fn delete_files_sequential<'a, T, S>(files_to_delete: T, location: &str)
 where
     T: IntoIterator<Item = &'a S>,
@@ -408,7 +363,7 @@ where
 /// # Arguments
 /// * `file_to_hash`: file object to hash
 /// * `location`: base directory of the file to hash, such that
-/// `location + file_to_hash.path()` is the absolute path of the file
+///   `location + file_to_hash.path()` is the absolute path of the file
 ///
 /// # Returns
 /// * Some: The hash of the given file
@@ -432,7 +387,7 @@ where
 /// # Arguments
 /// * `file_to_hash`: file object to hash
 /// * `location`: base directory of the file to hash, such that
-/// `location + file_to_hash.path()` is the absolute path of the file
+///   `location + file_to_hash.path()` is the absolute path of the file
 ///
 /// # Returns
 /// * Some: The hash of the given file
@@ -731,9 +686,9 @@ mod test_get_all_files {
             });
         }
 
-        for i in 0..SUB_DIRS.len() {
+        for sub_dir in SUB_DIRS {
             dir_set.insert(Dir {
-                path: PathBuf::from(SUB_DIRS[i]),
+                path: PathBuf::from(sub_dir),
             });
         }
 
@@ -1021,10 +976,10 @@ mod test_delete_files {
         let files_to_delete_sequential: Vec<&File> = Vec::new();
         let mut file_set = HashSet::new();
 
-        for i in 0..TEST_FILES.len() {
-            fs::File::create([TEST_DIR, TEST_FILES[i]].join("/")).unwrap();
+        for test_file in TEST_FILES {
+            fs::File::create([TEST_DIR, test_file].join("/")).unwrap();
             let file = File {
-                path: PathBuf::from(TEST_FILES[i]),
+                path: PathBuf::from(test_file),
                 size: 0,
             };
             file_set.insert(file);

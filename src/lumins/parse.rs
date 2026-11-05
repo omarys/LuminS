@@ -193,7 +193,7 @@ pub fn parse_args<'a>(args: &'a ArgMatches) -> Result<ParseResult<'a>, ()> {
 pub fn set_env(flags: Flag) {
     let mut builder = Builder::new();
     builder.format(|_, record| {
-        PROGRESS_BAR.println(format!("{}", record.args()));
+        PROGRESS_BAR.println(record.args().to_string());
         Ok(())
     });
 
