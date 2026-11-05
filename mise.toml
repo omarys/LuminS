@@ -106,3 +106,10 @@ run = "pre-commit run --all-files"
 [tasks.clean]
 description = "Remove build artifacts"
 run = "cargo clean"
+
+# Comparative, not a regression gate: builds a baseline worktree (default `master`)
+# plus this checkout, regenerates the README fixtures, and prints a median table
+# against rsync/cp/rm. `mise run bench -- --keep` keeps the fixtures and binaries.
+[tasks.bench]
+description = "Benchmark this checkout against a baseline ref and against rsync/cp/rm"
+run = "./tools/bench.sh"
