@@ -410,6 +410,7 @@ dependencies = [
  "log",
  "rayon",
  "seahash",
+ "thiserror",
 ]
 
 [[package]]
