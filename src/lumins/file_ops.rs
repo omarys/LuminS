@@ -15,6 +15,29 @@ use seahash::SeaHasher;
 use crate::lumins::parse::Flag;
 use crate::progress::PROGRESS_BAR;
 
+/// Removes whatever currently sits at `dest` so that a new entry can take its
+/// place.
+///
+/// Every create below (`fs::copy`, `symlink`, `create_dir_all`) either fails
+/// with `EEXIST` or leaves the stale entry untouched when the destination is of
+/// a different type or points somewhere else. That is precisely the case a sync
+/// exists to fix, so the conflict has to be cleared first.
+fn clear_existing(dest: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(dest) {
+        // A directory symlink is removed like a file on unix, but Windows only
+        // lets it go through `remove_dir`.
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => fs::remove_dir_all(dest),
+        Ok(_) => match fs::remove_file(dest) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                fs::remove_dir_all(dest).map_err(|_| error)
+            }
+            other => other,
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Interface for all file structs to perform common operations
 ///
 /// Ensures that all files (file, dir, symlink) have
@@ -52,6 +75,11 @@ impl FileOps for File {
         Ok(())
     }
     fn copy(&self, src: &Path, dest: &Path) -> io::Result<()> {
+        // `fs::copy` overwrites a file, but a directory in its way is a type
+        // change it reports as an error and would leave behind.
+        if fs::symlink_metadata(dest).is_ok_and(|meta| meta.is_dir()) {
+            clear_existing(dest)?;
+        }
         fs::copy(src, dest)?;
         info!("Copying file {:?} -> {:?}", src, dest);
         Ok(())
@@ -83,6 +111,9 @@ impl FileOps for Dir {
         Ok(())
     }
     fn copy(&self, _src: &Path, dest: &Path) -> io::Result<()> {
+        if fs::symlink_metadata(dest).is_ok_and(|meta| !meta.is_dir()) {
+            clear_existing(dest)?;
+        }
         fs::create_dir_all(dest)?;
         info!("Creating dir {:?}", dest);
         Ok(())
@@ -117,6 +148,10 @@ impl FileOps for Symlink {
     fn copy(&self, _src: &Path, dest: &Path) -> io::Result<()> {
         use std::os::unix::fs;
 
+        // `symlink` never overwrites: a link that merely points somewhere else
+        // is still an entry at `dest`, and has to go first or the old target
+        // silently wins.
+        clear_existing(dest)?;
         fs::symlink(&self.target, dest)?;
         info!("Creating symlink {:?} -> {:?}", dest, self.target);
         Ok(())
@@ -127,6 +162,7 @@ impl FileOps for Symlink {
 
         // A dangling target is created as a file symlink; `is_dir` is the only
         // distinction Windows makes.
+        clear_existing(dest)?;
         if self.target.is_dir() {
             fs::symlink_dir(&self.target, dest)?;
             info!("Creating symlink dir {:?} -> {:?}", dest, self.target);
@@ -1807,6 +1843,79 @@ mod test_hashing_and_failures {
         assert!(
             error.to_string().contains("failed to copy 1 entries"),
             "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod test_replacing_stale_entries {
+    use super::*;
+
+    /// A scratch directory under the system temp dir, removed when dropped
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join("lms_file_ops_tests").join(name);
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Scratch(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A file that changed into a directory has to replace it, not fail on it
+    #[test]
+    fn dir_copy_replaces_a_file() {
+        let scratch = Scratch::new("dir_copy_replaces_a_file");
+        let dest = scratch.0.join("entry");
+        fs::write(&dest, b"stale file").unwrap();
+
+        Dir::from("entry").copy(&dest, &dest).unwrap();
+
+        assert!(fs::metadata(&dest).unwrap().is_dir());
+    }
+
+    /// ... and the other way round
+    #[test]
+    fn file_copy_replaces_a_dir() {
+        let src = Scratch::new("file_copy_replaces_a_dir");
+        let dest = Scratch::new("file_copy_replaces_a_dir_out");
+        fs::write(src.0.join("entry"), b"fresh file").unwrap();
+        fs::create_dir_all(dest.0.join("entry")).unwrap();
+
+        File::from("entry", 10)
+            .copy(&src.0.join("entry"), &dest.0.join("entry"))
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.0.join("entry")).unwrap(),
+            "fresh file"
+        );
+    }
+
+    /// A link whose target changed kept pointing at the old target before
+    #[test]
+    #[cfg(target_family = "unix")]
+    fn symlink_copy_retargets_an_existing_link() {
+        let scratch = Scratch::new("symlink_copy_retargets_an_existing_link");
+        fs::write(scratch.0.join("old"), b"").unwrap();
+        fs::write(scratch.0.join("new"), b"").unwrap();
+        let dest = scratch.0.join("entry");
+        std::os::unix::fs::symlink(scratch.0.join("old"), &dest).unwrap();
+
+        Symlink::from("entry", &scratch.0.join("new").to_string_lossy())
+            .copy(&dest, &dest)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_link(&dest).unwrap(),
+            scratch.0.join("new").canonicalize().unwrap()
         );
     }
 }
