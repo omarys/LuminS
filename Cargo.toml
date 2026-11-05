@@ -8,7 +8,7 @@ rust-version = "1.85"
 license = "MIT"
 description = "A fast and reliable alternative to rsync for synchronizing local files"
 
-repository = "https://github.com/wchang22/lumins"
+repository = "https://github.com/omarys/LuminS"
 readme = "./README.md"
 keywords = ["rsync", "linux", "file", "cli", "sync"]
 categories = ["command-line-utilities", "filesystem"]

@@ -3,8 +3,8 @@
 <h4 align="center">A fast and reliable alternative to rsync for synchronizing local files</h4>
 
 <p align="center">
-  <a href="https://github.com/wchang22/LuminS/actions/workflows/CI.yml"><img src="https://github.com/wchang22/LuminS/actions/workflows/CI.yml/badge.svg?branch=master" alt="Build Status" /></a>
-  <a href="https://codecov.io/gh/wchang22/LuminS"><img src="https://codecov.io/gh/wchang22/LuminS/branch/master/graph/badge.svg" alt="Code Coverage" /></a>
+  <a href="https://github.com/omarys/LuminS/actions/workflows/CI.yml"><img src="https://github.com/omarys/LuminS/actions/workflows/CI.yml/badge.svg?branch=master" alt="Build Status" /></a>
+  <a href="https://codecov.io/gh/omarys/LuminS"><img src="https://codecov.io/gh/omarys/LuminS/branch/master/graph/badge.svg" alt="Code Coverage" /></a>
   <a href="https://crates.io/crates/lms"><img src="https://img.shields.io/crates/v/lms.svg" alt="Crate" /></a>
   <a href="https://docs.rs/lms"><img src="https://docs.rs/lms/badge.svg" alt="Docs" /></a>
 </p>
@@ -12,7 +12,7 @@
   <img src="examples/lumins.gif" alt="Demo"
 </p>
 
-<h3 align="center"><b>Note</b>: This project is no longer actively maintained. Pull requests are still welcome.</h3>
+<h3 align="center"><b>Note</b>: This project is maintained on a best-effort basis. Issues and pull requests are welcome.</h3>
 
 ## Features
 
@@ -27,6 +27,10 @@
 
 
 ## Usage
+
+> **`lms sync` deletes destination files that are not in the source.** Pass
+> `-n/--nodelete` to keep them. The exit status is `0` on success and `1` if any
+> copy, delete, or argument was rejected, so a backup script can branch on it.
 
 ```bash
 LuminS 0.4.0
@@ -101,40 +105,53 @@ Options:
 
 ## Benchmarks
 
-Using [hyperfine](https://github.com/sharkdp/hyperfine) on an Intel i7-8550U with the following 2 test folders. Measured with the 0.4.0 release binary and default release settings (no LTO); the current release profile enables `lto`, `codegen-units = 1` and `strip`, so the numbers below are a lower bound rather than a fresh measurement.
+Measured with [`tools/bench.sh`](tools/bench.sh), which regenerates the fixtures
+and times `lms` against `rsync`, `cp -r` and `rm -rf` on the same trees. Numbers
+are machine-dependent; run `mise run bench` to get yours.
 
-| Directory | Directory Size | Number of Files |
-| --------- | -------------- | --------------- |
-| 1         | 88MB           | 7262            |
-| 2         | 105MB          | 252             |
+Linux, 24 vCPU, both trees on tmpfs, so these are warm-cache CPU and syscall
+costs rather than disk throughput. Medians of 15 runs, destination reset before
+each run:
 
-| Command                | Directory       | Time                          |
-| ---------------------- | --------------- | ----------------------------- |
-| **lms sync**           | 1               | **179.1 ms** ± 5.1 ms         |
-| rsync -r --delete      | 1               | 717.8 ms ± 41.1 ms            |
-| **lms cp**             | 1               | **117.3 ms** ± 3.6 ms         |
-| cp -r                  | 1               | 283.4 ms ± 13.2 ms            |
-| **lms rm**             | 1               | **147.6 ms** ± 8.6 ms         |
-| rm -rf                 | 1               | 180.7 ms ± 4.3 ms             |
-| ---------------------- | --------------- | ----------------------------- |
-| **lms sync**           | 2               | **101.2 ms** ± 24.8 ms        |
-| rsync -r --delete      | 2               | 442.2 ms ± 19.6 ms            |
-| **lms cp**             | 2               | **33.8 ms** ± 2.8 ms          |
-| cp -r                  | 2               | 143.5 ms ± 18.8 ms            |
-| **lms rm**             | 2               | **10.0 ms** ± 2.8 ms          |
-| rm -rf                 | 2               | 27.4 ms ± 0.8 ms              |
+| Directory | Size | Files |
+| --------- | ---- | ----- |
+| 1 | 89.8 MiB | 7262 small files |
+| 2 | 103.6 MiB | 252 large files |
 
-Of course, these benchmarks can be highly dependent on CPU and IO devices.
+| Command | Directory 1 | Directory 2 |
+| ------- | ----------- | ----------- |
+| **`lms sync`** (into an absent destination) | **59.7 ms** | **11.5 ms** |
+| `rsync -r --delete` | 167.4 ms | 104.1 ms |
+| **`lms cp`** | **59.3 ms** | **11.1 ms** |
+| `cp -r` | 81.9 ms | 33.6 ms |
+| **`lms rm`** | **31.3 ms** | **5.1 ms** |
+| `rm -rf` | 32.8 ms | 8.2 ms |
+| **`lms sync`** (over an identical tree) | **32.4 ms** | **10.3 ms** |
+| `rsync -r --delete` | 70.9 ms | 45.8 ms |
+
+The gap opens on trees with a large number of small files, where per-file
+overhead dominates: `rsync` is 2.8x slower on directory 1 and 9x slower on
+directory 2. Against `cp -r` the win is smaller (1.4x and 3x) because both are
+doing the same syscalls. `lms rm` is barely ahead of `rm -rf` on many small
+files and 1.6x ahead on few large ones.
+
+Re-syncing an already identical tree is the interesting row: nothing is written,
+so it measures the scan-and-compare path alone, and it is why `lms sync` is
+cheap to run on a schedule.
 
 ## Build
 
 First [install](https://www.rust-lang.org/tools/install) Rust (recommended using rustup). The minimum supported Rust version is 1.85.
 
 ```zsh
-$ git clone https://github.com/wchang22/LuminS.git
+$ git clone https://github.com/omarys/LuminS.git
 $ cd LuminS
 $ cargo build --release
 ```
+
+Or with [mise](https://mise.jdx.dev) for a pinned toolchain and the same tasks CI
+runs: `mise run check` (format, clippy, build, test), `mise run msrv`, `mise run
+bench`.
 
 ## Install
 
@@ -144,6 +161,14 @@ Using cargo,
 $ cargo install lms
 ```
 
+This installs the release binary into `~/.cargo/bin`, or `${CARGO_HOME}/bin` when
+`CARGO_HOME` is set. In a checkout, `mise run install` does the same from source.
+
 ## Contributions
 
 Suggestions, issues, and pull requests are welcome!
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
