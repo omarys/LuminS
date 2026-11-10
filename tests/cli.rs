@@ -285,11 +285,76 @@ fn a_report_can_be_truncated_and_grouped_by_directory() {
     assert_eq!(report["truncated"], true);
 
     let overflow = report["total_overflow"].as_u64().expect("a count");
-    let by_dir = report["overflow_by_dir"].as_object().expect("a map");
-    let grouped: u64 = by_dir.values().map(|count| count.as_u64().unwrap()).sum();
+    assert_eq!(overflow, 8);
+
+    // Every category says what it lost, so a collapsed directory is never
+    // mistaken for mass deletions when it only held new files.
+    let added = &report["overflow"]["added"];
+    assert_eq!(added["count"], 8);
+    assert_eq!(added["by_dir"]["gen/"], 6);
+    assert_eq!(added["by_dir"]["assets/"], 1);
+    assert_eq!(added["by_dir"]["./"], 1);
+    assert_eq!(report["overflow"]["modified"]["count"], 0);
+    assert_eq!(report["overflow"]["deleted"]["count"], 0);
+
+    let grouped: u64 = report["overflow"]
+        .as_object()
+        .expect("a category map")
+        .values()
+        .flat_map(|category| category["by_dir"].as_object().unwrap().values())
+        .map(|count| count.as_u64().unwrap())
+        .sum();
     assert_eq!(grouped, overflow, "every dropped change is counted once");
-    assert_eq!(by_dir["gen/"], 6);
-    assert!(overflow >= 6);
+}
+
+#[test]
+fn deletions_and_rewrites_survive_a_flood_of_additions() {
+    let scratch = Scratch::new("truncated_signal");
+    let src = scratch.dir("src");
+    let dest = scratch.dir("dest");
+    for index in 0..40 {
+        scratch.file(&format!("src/gen/new_{index}.rs"), "generated\n");
+    }
+    scratch.file("src/src/edited.rs", "before\n");
+    scratch.file("dest/src/edited.rs", "before\n");
+    scratch.file("dest/src/gone_a.rs", "old\n");
+    scratch.file("dest/src/gone_b.rs", "old\n");
+    scratch.file("src/src/edited.rs", "after, and longer\n");
+
+    // A budget of 4 leaves 40 additions competing for whatever is left after
+    // the two categories a caller can least afford to miss.
+    let output = run(&["sync", &src, &dest, "--llm", "--max-report-files", "4"]);
+    assert!(output.status.success());
+
+    let report = report(&output);
+    assert_eq!(
+        listed(&report, "deleted"),
+        vec!["src/gone_a.rs", "src/gone_b.rs"]
+    );
+    assert_eq!(report["changes"]["modified"][0]["path"], "src/edited.rs");
+    assert_eq!(listed(&report, "added").len(), 1);
+    // 41 additions compete (40 files and the `gen/` directory itself); 40 lose
+    assert_eq!(report["overflow"]["added"]["count"], 40);
+}
+
+#[test]
+fn a_zero_budget_reports_counts_without_paths() {
+    let scratch = Scratch::new("truncated_to_counts");
+    let src = scratch.dir("src");
+    let dest = scratch.dir("dest");
+    scratch.file("src/a.rs", "a\n");
+    scratch.file("src/b.rs", "b\n");
+    scratch.file("dest/gone.rs", "c\n");
+
+    let output = run(&["sync", &src, &dest, "--llm", "--max-report-files", "0"]);
+    assert!(output.status.success());
+
+    let report = report(&output);
+    assert_eq!(report["truncated"], true);
+    assert_eq!(listed(&report, "added"), Vec::<String>::new());
+    assert_eq!(report["overflow"]["added"]["count"], 2);
+    assert_eq!(report["overflow"]["deleted"]["by_dir"]["./"], 1);
+    assert_eq!(report["total_overflow"], 3);
 }
 
 #[test]
@@ -396,4 +461,62 @@ fn removing_several_targets_reports_one_document_each() {
     assert_eq!(reports.len(), 2);
     assert_eq!(listed(&reports[0], "deleted"), vec!["a.txt"]);
     assert_eq!(listed(&reports[1], "deleted"), vec!["b.txt"]);
+}
+
+#[test]
+fn a_failed_run_reports_on_stdout_as_well_as_stderr() {
+    let scratch = Scratch::new("error_report");
+    let dest = scratch.dir("dest");
+
+    let output = run(&["sync", "lms_no_such_source", &dest, "--llm"]);
+    assert_eq!(output.status.code(), USAGE_ERROR);
+
+    // Silence on stdout is what a successful run with nothing to do looks like,
+    // so a failure has to say so where the report would have been.
+    let document = report(&output);
+    assert_eq!(document["status"], "error");
+    assert!(document["error"]
+        .as_str()
+        .expect("a message")
+        .contains("Source Error"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Source Error"));
+}
+
+#[test]
+fn a_failed_run_stays_quiet_without_a_reporting_mode() {
+    let scratch = Scratch::new("error_quiet");
+    let dest = scratch.dir("dest");
+
+    let output = run(&["sync", "lms_no_such_source", &dest]);
+    assert_eq!(output.status.code(), USAGE_ERROR);
+    assert!(output.stdout.is_empty(), "a plain run prints no report");
+}
+
+#[test]
+fn rm_refuses_the_build_artifact_preset() {
+    let output = run(&["rm", "some-target", "--ignore-vcs-and-build"]);
+
+    // On a destructive verb the flag would mean "leave the build tree behind and
+    // exit 0", which reads as a clean sweep while gigabytes survive.
+    assert_eq!(output.status.code(), USAGE_ERROR);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ignore-vcs-and-build"), "{stderr}");
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn the_build_artifact_preset_still_applies_to_a_sync() {
+    let scratch = Scratch::new("preset_on_sync");
+    let src = scratch.dir("src");
+    let dest = scratch.dir("dest");
+    scratch.file("src/target/debug/junk", "junk\n");
+    scratch.file("src/node_modules/pkg/index.js", "js\n");
+    scratch.file("src/.git/HEAD", "ref\n");
+    scratch.file("src/keep.rs", "fn main() {}\n");
+
+    let output = run(&["sync", &src, &dest, "--llm", "--ignore-vcs-and-build"]);
+    assert!(output.status.success());
+
+    let report = report(&output);
+    assert_eq!(listed(&report, "added"), vec!["keep.rs"]);
 }

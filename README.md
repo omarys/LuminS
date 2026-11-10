@@ -114,12 +114,15 @@ Options:
   -S, --sequential            Delete files sequentially instead of in parallel
       --json                  Emit one compact JSON report on stdout and suppress the progress bar
       --llm                   Agent-first reporting: compact JSON, no progress bar, and at most --max-report-files changes listed (default 50) [alias: --machine-readable]
-      --max-report-files <N>  List at most N changes in a report, summarising the rest per directory (default 50 under --llm, unlimited otherwise)
-      --ignore-vcs-and-build  Skip VCS and build artifacts: .git/, target/, node_modules/, dist/, .cache/, *.pyc
+      --max-report-files <N>  List at most N changes in a report, summarising the rest per directory (default 50 under --llm, unlimited otherwise; 0 keeps counts only)
   -N, --dry-run               Report what would change without touching the destination [alias: --dryrun]
   -h, --help                  Print help
   -V, --version               Print version
 ```
+
+`rm` has no `--ignore-vcs-and-build`: on a destructive verb "skip build artifacts"
+would mean leaving `node_modules/` and `target/` on disk and exiting `0`, which
+reads as a clean sweep while gigabytes survive.
 
 ## Agent-friendly reporting
 
@@ -150,28 +153,59 @@ $ lms sync src/ dest/ --llm --dry-run
 | `stats.duration_ms` | Wall-clock time of the command |
 
 Classification is by path: a file that grew is one `modified` entry, never a
-`deleted` plus an `added` one.
+`deleted` plus an `added` one. A symlink whose target changed is one `modified`
+entry with `delta_bytes: 0` and `hunks: 1`, which is how rsync itemizes it too
+(`cLc`), rather than a deletion plus a creation.
 
 ### Truncation
 
 A sync of a build tree changes thousands of files, and listing them all is what
 blows up a caller's context - which directory they live in is the whole signal.
-`--max-report-files N` keeps the first `N` changes (sorted, so the cut is stable)
-and summarises the rest per directory:
+`--max-report-files N` keeps up to `N` changes (sorted, so the cut is stable) and
+summarises the rest per category and directory:
 
 ```console
 $ lms sync src/ dest/ --llm --max-report-files 2
-{"status":"synced","changes":{"added":["assets","assets/asset_0.png"],"modified":[],"deleted":[]},"stats":{"scanned":10,"transferred_bytes":68,"duration_ms":2},"truncated":true,"total_overflow":8,"overflow_by_dir":{"./":1,"assets/":1,"gen/":6}}
+{"status":"synced","changes":{"added":["assets","assets/asset_0.png"],"modified":[],"deleted":[]},"stats":{"scanned":10,"transferred_bytes":68,"duration_ms":2},"truncated":true,"total_overflow":8,"overflow":{"added":{"count":8,"by_dir":{"./":1,"assets/":1,"gen/":6}},"modified":{"count":0,"by_dir":{}},"deleted":{"count":0,"by_dir":{}}}}
 ```
+
+The budget is not first-come-first-served. Unpacking a fixture or generating
+assets puts hundreds of paths in `added`, and spending the whole budget there
+would leave a caller blind to the deletions and rewrites in the same run. Each
+category gets a share - 20% to `deleted`, 50% to `modified`, the rest to `added`,
+with at least one deletion listed whenever the run made one - and whatever a
+category does not need spills down to the others, draining `modified`, then
+`deleted`, then `added`.
+
+The overflow is reported per category for the same reason: a collapsed
+directory holding new assets and one holding deletions call for opposite
+reactions, and a merged count cannot tell them apart.
+
+`--max-report-files 0` keeps the counts and drops every path, for a caller that
+only wants to know whether anything at all changed.
 
 The truncation keys are absent unless something was dropped, so a caller never
 has to read a `"truncated": false` branch it does not need.
+
+### Failures
+
+A run that fails exits `1` and says why on stderr. Under a reporting mode it also
+answers on stdout, because silence there is what a run that changed nothing
+looks like:
+
+```console
+$ lms sync nope/ dest/ --llm; echo "exit=$?"
+Source Error -- nope/: No such file or directory (os error 2)          # stderr
+{"status":"error","error":"Source Error -- nope/: No such file or directory (os error 2)"}
+exit=1
+```
 
 ### Skipping build and VCS noise
 
 `--ignore-vcs-and-build` skips `.git/`, `target/`, `node_modules/`, `dist/`,
 `.cache/` and `*.pyc`. Only entries inside the walked tree are skipped: pointing
-`lms` at `.git` or `target` still syncs it.
+`lms` at `.git` or `target` still syncs it. It is not available on `rm`, where
+it would mean leaving the build tree behind and still exiting `0`.
 
 ```console
 $ lms sync src/ dest/ --llm --ignore-vcs-and-build

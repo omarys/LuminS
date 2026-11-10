@@ -23,6 +23,11 @@ fn main() {
         Ok(parsed) => (parsed.sub_command, parsed.flags, parsed.max_report_files),
         Err(e) => {
             eprintln!("{e}");
+            // The flags never made it out of parsing, and `--ignore-vcs-and-build`
+            // is not on every subcommand, so the request is read from the matches.
+            if parse::reports_requested(&args) {
+                println!("{}", Report::error_json(&e.to_string()));
+            }
             process::exit(1);
         }
     };
@@ -53,6 +58,12 @@ fn main() {
         Ok(reports) => reports,
         Err(e) => {
             eprintln!("{}", e);
+            // Under a reporting mode the failure also has to appear on stdout:
+            // a caller reading a pipe would otherwise get the same silence as a
+            // run that found nothing to do. The exit code still says it failed.
+            if flags.reports() {
+                println!("{}", Report::error_json(&e.to_string()));
+            }
             process::exit(1);
         }
     };

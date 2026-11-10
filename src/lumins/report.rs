@@ -44,6 +44,10 @@ impl Status {
 }
 
 /// A file whose contents the run had to rewrite
+///
+/// A symlink whose target changed lands here too, with no byte delta and one
+/// hunk. That is rsync's model as well: it itemizes a retargeted link as `cLc`,
+/// a single changed entry, never a deletion plus a creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Modified {
     /// Path relative to the source root
@@ -54,6 +58,8 @@ pub struct Modified {
     /// report `0`; `hunks` is what says the file changed.
     pub delta_bytes: i64,
     /// Number of runs of differing 8 KiB windows
+    ///
+    /// A symlink has no windows, so its single target counts as one.
     pub hunks: u32,
 }
 
@@ -102,6 +108,38 @@ pub struct Stats {
     pub duration_ms: u128,
 }
 
+/// What one category of changes lost to the size limit
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overflow {
+    /// How many changes of this kind were dropped
+    pub count: usize,
+    /// Those changes, counted by the directory that holds them
+    pub by_dir: BTreeMap<String, usize>,
+}
+
+impl Overflow {
+    /// Drops `path` into this category's summary
+    fn add(&mut self, path: &str) {
+        self.count += 1;
+        *self.by_dir.entry(directory(path)).or_insert(0) += 1;
+    }
+}
+
+/// What each category lost to the size limit
+///
+/// Kept per category rather than merged: a collapsed directory holding new
+/// assets and a collapsed directory holding deletions call for opposite
+/// reactions, and one merged bucket cannot tell them apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Overflowed {
+    /// Dropped additions
+    pub added: Overflow,
+    /// Dropped modifications
+    pub modified: Overflow,
+    /// Dropped deletions
+    pub deleted: Overflow,
+}
+
 /// One run, summarised
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -115,8 +153,8 @@ pub struct Report {
     pub truncated: bool,
     /// Number of changes dropped by that cut
     pub total_overflow: usize,
-    /// Dropped changes, counted by the directory that holds them
-    pub overflow_by_dir: BTreeMap<String, usize>,
+    /// Dropped changes, counted by category and directory
+    pub overflow: Overflowed,
 }
 
 impl Report {
@@ -128,7 +166,7 @@ impl Report {
             stats: Stats::default(),
             truncated: false,
             total_overflow: 0,
-            overflow_by_dir: BTreeMap::new(),
+            overflow: Overflowed::default(),
         }
     }
 
@@ -145,31 +183,46 @@ impl Report {
             return;
         }
 
-        let mut budget = max;
-        let mut overflow: Vec<String> = Vec::new();
+        let (keep_added, keep_modified, keep_deleted) = partition_budget(
+            max,
+            self.changes.added.len(),
+            self.changes.modified.len(),
+            self.changes.deleted.len(),
+        );
 
-        let added = std::mem::take(&mut self.changes.added);
-        let kept = added.len().min(budget);
-        budget -= kept;
-        overflow.extend(added[kept..].iter().cloned());
-        self.changes.added = added[..kept].to_vec();
+        let mut added = std::mem::take(&mut self.changes.added);
+        for path in added.split_off(keep_added) {
+            self.overflow.added.add(&path);
+        }
+        self.changes.added = added;
 
-        let modified = std::mem::take(&mut self.changes.modified);
-        let kept = modified.len().min(budget);
-        budget -= kept;
-        overflow.extend(modified[kept..].iter().map(|m| m.path.clone()));
-        self.changes.modified = modified[..kept].to_vec();
+        let mut modified = std::mem::take(&mut self.changes.modified);
+        for change in modified.split_off(keep_modified) {
+            self.overflow.modified.add(&change.path);
+        }
+        self.changes.modified = modified;
 
-        let deleted = std::mem::take(&mut self.changes.deleted);
-        let kept = deleted.len().min(budget);
-        overflow.extend(deleted[kept..].iter().cloned());
-        self.changes.deleted = deleted[..kept].to_vec();
+        let mut deleted = std::mem::take(&mut self.changes.deleted);
+        for path in deleted.split_off(keep_deleted) {
+            self.overflow.deleted.add(&path);
+        }
+        self.changes.deleted = deleted;
 
         self.truncated = true;
-        self.total_overflow = overflow.len();
-        for path in overflow {
-            *self.overflow_by_dir.entry(directory(&path)).or_insert(0) += 1;
-        }
+        self.total_overflow =
+            self.overflow.added.count + self.overflow.modified.count + self.overflow.deleted.count;
+    }
+
+    /// Renders a failed run as one compact JSON object
+    ///
+    /// A caller reading stdout cannot tell a run that changed nothing from one
+    /// that died before reporting, so the failure is stated where the report
+    /// would have been. Two keys, on purpose: stderr carries the detail.
+    pub fn error_json(message: &str) -> String {
+        let mut out = String::from("{\"status\":\"error\",\"error\":");
+        write_json_string(&mut out, message);
+        out.push('}');
+        out
     }
 
     /// Renders the report as one compact JSON object
@@ -221,16 +274,14 @@ impl Report {
         if self.truncated {
             let _ = write!(
                 out,
-                ",\"truncated\":true,\"total_overflow\":{},\"overflow_by_dir\":{{",
+                ",\"truncated\":true,\"total_overflow\":{},\"overflow\":{{\"added\":",
                 self.total_overflow
             );
-            for (i, (dir, count)) in self.overflow_by_dir.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_json_string(&mut out, dir);
-                let _ = write!(out, ":{count}");
-            }
+            write_overflow(&mut out, &self.overflow.added);
+            out.push_str(",\"modified\":");
+            write_overflow(&mut out, &self.overflow.modified);
+            out.push_str(",\"deleted\":");
+            write_overflow(&mut out, &self.overflow.deleted);
             out.push('}');
         }
 
@@ -250,6 +301,66 @@ fn directory(path: &str) -> String {
         }
         _ => "./".to_string(),
     }
+}
+
+/// Splits a report budget across the three categories
+///
+/// Guarantees a share to the changes that carry the most signal - what was
+/// destroyed, then what was rewritten - and lets a category that does not need
+/// its share spill the surplus to the others. Returned as
+/// `(added, modified, deleted)`.
+///
+/// The reservations are 20% deleted, 50% modified and the rest added, with at
+/// least one deletion listed whenever there is one: a caller that sees
+/// `deleted: []` on a run that destroyed files cannot tell that apart from a
+/// clean run. Leftover capacity drains modified, then deleted, then added, so an
+/// idle category costs the others nothing.
+pub fn partition_budget(
+    total_budget: usize,
+    num_added: usize,
+    num_modified: usize,
+    num_deleted: usize,
+) -> (usize, usize, usize) {
+    if total_budget == 0 {
+        return (0, 0, 0);
+    }
+
+    let cap_deleted = (total_budget * 2 / 10).max(usize::from(num_deleted > 0));
+    let cap_modified = total_budget * 5 / 10;
+    let cap_added = total_budget.saturating_sub(cap_deleted + cap_modified);
+
+    let take_deleted = num_deleted.min(cap_deleted);
+    let take_modified = num_modified.min(cap_modified);
+    let take_added = num_added.min(cap_added);
+
+    let mut remaining = total_budget.saturating_sub(take_deleted + take_modified + take_added);
+
+    let extra_modified = (num_modified - take_modified).min(remaining);
+    remaining -= extra_modified;
+
+    let extra_deleted = (num_deleted - take_deleted).min(remaining);
+    remaining -= extra_deleted;
+
+    let extra_added = (num_added - take_added).min(remaining);
+
+    (
+        take_added + extra_added,
+        take_modified + extra_modified,
+        take_deleted + extra_deleted,
+    )
+}
+
+/// Writes one category's dropped changes as `{"count":N,"by_dir":{...}}`
+fn write_overflow(out: &mut String, overflow: &Overflow) {
+    let _ = write!(out, "{{\"count\":{},\"by_dir\":{{", overflow.count);
+    for (i, (dir, count)) in overflow.by_dir.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_json_string(out, dir);
+        let _ = write!(out, ":{count}");
+    }
+    out.push_str("}}");
 }
 
 /// Writes `value` as a JSON string literal, escaping what JSON requires
@@ -464,7 +575,7 @@ mod test_report {
 
         assert!(!report.truncated);
         assert_eq!(report.total_overflow, 0);
-        assert!(report.overflow_by_dir.is_empty());
+        assert_eq!(report.overflow, Overflowed::default());
         assert_eq!(report.changes.len(), 3);
         assert!(!report.to_json().contains("truncated"));
     }
@@ -490,17 +601,21 @@ mod test_report {
             vec!["assets/logo.png", "target/debug/build/a"]
         );
         assert_eq!(report.total_overflow, 3);
+        assert_eq!(report.overflow.added.count, 3);
         assert_eq!(
-            report.overflow_by_dir,
+            report.overflow.added.by_dir,
             BTreeMap::from([
                 ("target/debug/build/".to_string(), 2),
                 ("./".to_string(), 1),
             ])
         );
+        // Nothing was dropped from the empty categories, and they say so
+        assert_eq!(report.overflow.modified.count, 0);
+        assert_eq!(report.overflow.deleted.count, 0);
     }
 
     #[test]
-    fn truncation_consumes_the_budget_across_all_three_lists() {
+    fn truncation_reserves_a_share_for_each_category() {
         let mut report = Report::new(Status::Synced);
         report.changes.added = vec!["a".to_string(), "b".to_string()];
         report.changes.modified = vec![Modified {
@@ -513,11 +628,99 @@ mod test_report {
 
         report.truncate(3);
 
-        assert_eq!(report.changes.added, vec!["a", "b"]);
+        // One of each, rather than two additions and nothing else
+        assert_eq!(report.changes.added, vec!["a"]);
         assert_eq!(report.changes.modified.len(), 1);
-        assert!(report.changes.deleted.is_empty());
+        assert_eq!(report.changes.deleted, vec!["d"]);
         assert_eq!(report.total_overflow, 1);
-        assert_eq!(report.overflow_by_dir["./"], 1);
+        assert_eq!(report.overflow.added.by_dir["./"], 1);
+    }
+
+    #[test]
+    fn deletions_survive_a_flood_of_additions() {
+        let mut report = Report::new(Status::Synced);
+        report.changes.added = (0..100).map(|i| format!("gen/new_{i}.rs")).collect();
+        report.changes.modified = (0..3)
+            .map(|i| Modified {
+                path: format!("src/edit_{i}.rs"),
+                delta_bytes: i,
+                hunks: 1,
+            })
+            .collect();
+        report.changes.deleted = vec!["src/gone_a.rs".to_string(), "src/gone_b.rs".to_string()];
+        report.changes.sort();
+
+        report.truncate(10);
+
+        assert_eq!(report.changes.deleted.len(), 2);
+        assert_eq!(report.changes.modified.len(), 3);
+        assert_eq!(report.changes.added.len(), 5);
+        assert_eq!(report.changes.len(), 10);
+        assert_eq!(report.overflow.added.count, 95);
+        assert_eq!(report.overflow.added.by_dir["gen/"], 95);
+    }
+
+    #[test]
+    fn a_zero_budget_keeps_the_counts_only() {
+        let mut report = Report::new(Status::Synced);
+        report.changes.added = vec!["a".to_string(), "b".to_string()];
+        report.changes.modified = vec![Modified {
+            path: "c".to_string(),
+            delta_bytes: 1,
+            hunks: 1,
+        }];
+        report.changes.deleted = vec!["gone.rs".to_string()];
+        report.changes.sort();
+
+        report.truncate(0);
+
+        assert!(report.truncated);
+        assert_eq!(report.changes.len(), 0);
+        assert_eq!(report.total_overflow, 4);
+        assert_eq!(report.overflow.added.count, 2);
+        assert_eq!(report.overflow.modified.count, 1);
+        assert_eq!(report.overflow.deleted.count, 1);
+        assert!(report.to_json().contains("\"total_overflow\":4"));
+    }
+
+    #[test]
+    fn the_budget_never_overruns_or_invents_entries() {
+        for budget in 0..25 {
+            for counts in [
+                (0, 0, 0),
+                (1, 0, 0),
+                (0, 1, 0),
+                (0, 0, 1),
+                (100, 5, 3),
+                (3, 100, 2),
+            ] {
+                let (a, m, d) = partition_budget(budget, counts.0, counts.1, counts.2);
+                assert!(a + m + d <= budget, "{counts:?} at {budget} overspent");
+                assert!(a <= counts.0 && m <= counts.1 && d <= counts.2);
+                // A deletion is never the category that gets starved
+                if counts.2 > 0 && budget > 0 {
+                    assert!(d >= 1, "{counts:?} at {budget} hid its deletions");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn surplus_from_an_idle_category_is_spent_elsewhere() {
+        // No deletions, nothing modified: additions may use the whole budget
+        assert_eq!(partition_budget(10, 100, 0, 0), (10, 0, 0));
+        // Deletions only: they may use the whole budget too
+        assert_eq!(partition_budget(10, 0, 0, 100), (0, 0, 10));
+    }
+
+    #[test]
+    fn an_error_is_reported_as_one_json_object() {
+        let json = Report::error_json("Source Error -- /nope\n");
+
+        assert_eq!(
+            json,
+            r#"{"status":"error","error":"Source Error -- /nope\n"}"#
+        );
     }
 
     #[test]

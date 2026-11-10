@@ -140,10 +140,14 @@ pub fn command() -> Command {
             .value_parser(clap::value_parser!(usize))
             .help(
                 "List at most N changes in a report, summarising the rest per directory \
-                 (default 50 under --llm, unlimited otherwise)",
+                 (default 50 under --llm, unlimited otherwise; 0 keeps counts only)",
             )
     };
 
+    // Only on the subcommands that read a source tree. On `rm` it would mean the
+    // opposite of what it says: a cleanup that is asked to skip build artifacts
+    // has to leave `node_modules/` and `target/` on disk and still exit 0, which
+    // reads as success while gigabytes survive.
     let ignore_vcs_and_build = || {
         Arg::new("ignore-vcs-and-build")
             .long("ignore-vcs-and-build")
@@ -209,7 +213,6 @@ pub fn command() -> Command {
                 .arg(json())
                 .arg(llm())
                 .arg(max_report_files())
-                .arg(ignore_vcs_and_build())
                 .arg(dry_run())
                 .arg(
                     Arg::new("TARGET")
@@ -273,6 +276,20 @@ fn is_present(args: &ArgMatches, name: &str) -> bool {
         .flatten()
         .copied()
         .unwrap_or(false)
+}
+
+/// Whether the arguments asked for a report, even when parsing them afterwards
+/// failed
+///
+/// A run that dies on a bad source still has to answer on stdout when a caller
+/// asked for a report: silence is what a run that changed nothing looks like.
+/// `parse_args` returns no flags on that path, so the request is read from the
+/// matches directly.
+pub fn reports_requested(args: &ArgMatches) -> bool {
+    let Some((_, sub_command_args)) = args.subcommand() else {
+        return false;
+    };
+    is_present(sub_command_args, "json") || is_present(sub_command_args, "llm")
 }
 
 /// Parses command line arguments into a validated `SubCommand` and its flags,
