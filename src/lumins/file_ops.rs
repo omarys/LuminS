@@ -26,10 +26,19 @@ const VCS_AND_BUILD_DIRS: [&str; 5] = [".git", "target", "node_modules", "dist",
 /// File extension that `--ignore-vcs-and-build` skips
 const VCS_AND_BUILD_EXTENSION: &str = "pyc";
 
+/// Directory that `rm --preserve-vcs` spares
+///
+/// Deliberately just the one entry: `--ignore-vcs-and-build` groups `.git` with
+/// build output because neither belongs in a transfer, but on a delete the two
+/// pull in opposite directions - the history is the part that cannot be
+/// recreated, and the build tree is the part that should go.
+const VCS_DIR: &str = ".git";
+
 /// What a tree walk leaves out
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Scan {
     ignore_vcs_and_build: bool,
+    preserve_vcs: bool,
 }
 
 impl Scan {
@@ -37,6 +46,7 @@ impl Scan {
     fn from_flags(flags: Flag) -> Self {
         Scan {
             ignore_vcs_and_build: flags.contains(Flag::IGNORE_VCS_AND_BUILD),
+            preserve_vcs: flags.contains(Flag::PRESERVE_VCS),
         }
     }
 
@@ -45,6 +55,9 @@ impl Scan {
     /// Only names inside the walked tree are tested, never the root itself: a
     /// caller that points `lms` at `.git` or `target` means it.
     fn skips(&self, name: &std::ffi::OsStr) -> bool {
+        if self.preserve_vcs && name == std::ffi::OsStr::new(VCS_DIR) {
+            return true;
+        }
         if !self.ignore_vcs_and_build {
             return false;
         }

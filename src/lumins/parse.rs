@@ -32,6 +32,7 @@ bitflags! {
         const LLM                   = 0x20;
         const IGNORE_VCS_AND_BUILD  = 0x40;
         const DRY_RUN               = 0x80;
+        const PRESERVE_VCS          = 0x100;
     }
 }
 
@@ -167,6 +168,17 @@ pub fn command() -> Command {
             .help("Report what would change without touching the destination")
     };
 
+    // `rm` cannot offer `--ignore-vcs-and-build`: it would spare the build tree
+    // and exit 0, which reads as a clean sweep. What a destructive verb does
+    // need is the opposite of that preset's `.git` half - spare the history,
+    // delete everything else - so the flag is named for what it keeps.
+    let preserve_vcs = || {
+        Arg::new("preserve-vcs")
+            .long("preserve-vcs")
+            .action(ArgAction::SetTrue)
+            .help("Leave .git/ alone; every other directory is still deleted")
+    };
+
     Command::new("LuminS")
         .version(env!("CARGO_PKG_VERSION"))
         // clap 2 propagated the version to subcommands, so `lms cp -V` worked.
@@ -213,6 +225,7 @@ pub fn command() -> Command {
                 .arg(json())
                 .arg(llm())
                 .arg(max_report_files())
+                .arg(preserve_vcs())
                 .arg(dry_run())
                 .arg(
                     Arg::new("TARGET")
@@ -303,7 +316,7 @@ pub fn parse_args(args: &ArgMatches) -> Result<ParseResult<'_>, ParseError> {
 
     // Each flag is paired with its own bit, so the order of this list is not
     // load-bearing and a reordering cannot silently mint the wrong bits.
-    const FLAGS: [(Flag, &str); 8] = [
+    const FLAGS: [(Flag, &str); 9] = [
         (Flag::NO_DELETE, "nodelete"),
         (Flag::SECURE, "secure"),
         (Flag::VERBOSE, "verbose"),
@@ -312,6 +325,7 @@ pub fn parse_args(args: &ArgMatches) -> Result<ParseResult<'_>, ParseError> {
         (Flag::LLM, "llm"),
         (Flag::IGNORE_VCS_AND_BUILD, "ignore-vcs-and-build"),
         (Flag::DRY_RUN, "dry-run"),
+        (Flag::PRESERVE_VCS, "preserve-vcs"),
     ];
 
     let mut flags = Flag::empty();
@@ -681,6 +695,32 @@ mod test_parse_args {
         assert!(flags.contains(Flag::LLM));
         assert!(flags.contains(Flag::IGNORE_VCS_AND_BUILD));
         assert!(flags.contains(Flag::DRY_RUN));
+    }
+
+    #[test]
+    fn preserve_vcs_is_read_from_a_remove() {
+        let scratch = Scratch::new("preserve_vcs_is_read_from_a_remove");
+        let target = scratch.sub_dir("target");
+        let args = matches(&["lms", "rm", "--preserve-vcs", &target]);
+
+        let flags = parse_args(&args).expect("the target exists").flags;
+        assert!(flags.contains(Flag::PRESERVE_VCS));
+        // The two presets are opposites: one spares the build tree, the other
+        // spares only the history, so neither implies the other.
+        assert!(!flags.contains(Flag::IGNORE_VCS_AND_BUILD));
+    }
+
+    #[test]
+    fn preserve_vcs_is_not_offered_to_a_transfer() {
+        let scratch = Scratch::new("preserve_vcs_is_not_offered_to_a_transfer");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+
+        for sub_command in ["cp", "sync"] {
+            let args =
+                command().try_get_matches_from(["lms", sub_command, "--preserve-vcs", &src, &dest]);
+            assert!(args.is_err(), "{sub_command} accepted --preserve-vcs");
+        }
     }
 
     #[test]

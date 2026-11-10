@@ -520,3 +520,88 @@ fn the_build_artifact_preset_still_applies_to_a_sync() {
     let report = report(&output);
     assert_eq!(listed(&report, "added"), vec!["keep.rs"]);
 }
+
+#[test]
+fn rm_spares_only_the_history_with_preserve_vcs() {
+    let scratch = Scratch::new("preserve_vcs");
+    let kept = scratch.dir("kept");
+    let swept = scratch.dir("swept");
+    for root in ["kept", "swept"] {
+        scratch.file(&format!("{root}/.git/HEAD"), "ref: refs/heads/main\n");
+        scratch.file(&format!("{root}/target/debug/app"), "binary\n");
+        scratch.file(&format!("{root}/node_modules/pkg/index.js"), "js\n");
+        scratch.file(&format!("{root}/src/main.rs"), "fn main() {}\n");
+    }
+
+    let output = run(&["rm", &kept, "--llm", "--preserve-vcs"]);
+    assert!(output.status.success());
+
+    // The history survives; the build tree is exactly what a sweep is for, so it
+    // goes with everything else.
+    assert!(scratch.path("kept/.git/HEAD").exists(), ".git was deleted");
+    assert!(!scratch.path("kept/target").exists(), "target/ survived");
+    assert!(!scratch.path("kept/node_modules").exists());
+    assert!(!scratch.path("kept/src").exists());
+
+    let swept_history = report(&output);
+    let deleted = listed(&swept_history, "deleted");
+    assert!(
+        !deleted.iter().any(|path| path.starts_with(".git")),
+        "{deleted:?}"
+    );
+    assert!(deleted.iter().any(|path| path == "target/debug/app"));
+    // Three files and five directories; `.git` and its `HEAD` never entered the
+    // walk, so they cost nothing to scan either.
+    assert_eq!(swept_history["stats"]["scanned_dest"], 8);
+
+    // Without the flag the whole tree goes, history included.
+    let output = run(&["rm", &swept, "--llm"]);
+    assert!(output.status.success());
+    assert!(!scratch.path("swept").exists());
+    // The same tree without the flag scans the two `.git` entries as well.
+    assert_eq!(report(&output)["stats"]["scanned_dest"], 10);
+}
+
+#[test]
+fn preserve_vcs_is_a_remove_only_flag() {
+    let scratch = Scratch::new("preserve_vcs_subcommands");
+    let src = scratch.dir("src");
+    let dest = scratch.dir("dest");
+
+    for sub_command in ["cp", "sync"] {
+        let output = run(&[sub_command, &src, &dest, "--preserve-vcs"]);
+        assert_eq!(output.status.code(), USAGE_ERROR, "{sub_command}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("preserve-vcs"));
+    }
+}
+
+#[test]
+fn stats_split_the_source_and_destination_scans() {
+    let scratch = Scratch::new("scanned_split");
+    let src = scratch.dir("src");
+    let dest = scratch.dir("dest");
+    // Source entries: `sub` and two files.
+    scratch.file("src/a.rs", "a\n");
+    scratch.file("src/sub/b.rs", "b\n");
+    // Destination entries: three files, and no directory of its own.
+    scratch.file("dest/a.rs", "a\n");
+    scratch.file("dest/stale.rs", "stale\n");
+    scratch.file("dest/older.rs", "older\n");
+
+    let output = run(&["sync", &src, &dest, "--llm", "--dry-run"]);
+    assert!(output.status.success());
+
+    // The destination count is the denominator for the deletions: three
+    // scanned, one deleted is a trim, three scanned and three deleted a wipe.
+    let synced = report(&output);
+    assert_eq!(synced["stats"]["scanned_src"], 3);
+    assert_eq!(synced["stats"]["scanned_dest"], 3);
+    assert_eq!(listed(&synced, "deleted").len(), 2);
+
+    // A remove has no source, so its target is counted on the destination side.
+    let output = run(&["rm", &dest, "--json", "--dry-run"]);
+    assert!(output.status.success());
+    let removed = report(&output);
+    assert_eq!(removed["stats"]["scanned_src"], 0);
+    assert_eq!(removed["stats"]["scanned_dest"], 3);
+}

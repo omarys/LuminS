@@ -115,6 +115,7 @@ Options:
       --json                  Emit one compact JSON report on stdout and suppress the progress bar
       --llm                   Agent-first reporting: compact JSON, no progress bar, and at most --max-report-files changes listed (default 50) [alias: --machine-readable]
       --max-report-files <N>  List at most N changes in a report, summarising the rest per directory (default 50 under --llm, unlimited otherwise; 0 keeps counts only)
+      --preserve-vcs          Leave .git/ alone; every other directory is still deleted
   -N, --dry-run               Report what would change without touching the destination [alias: --dryrun]
   -h, --help                  Print help
   -V, --version               Print version
@@ -122,7 +123,19 @@ Options:
 
 `rm` has no `--ignore-vcs-and-build`: on a destructive verb "skip build artifacts"
 would mean leaving `node_modules/` and `target/` on disk and exiting `0`, which
-reads as a clean sweep while gigabytes survive.
+reads as a clean sweep while gigabytes survive. What a delete does need is the
+opposite of that preset's `.git` half, so `--preserve-vcs` spares `.git/` and
+nothing else - the history is the part that cannot be recreated, and the build
+tree is the part the sweep exists to remove. The target directory itself survives
+with the spared history in it.
+
+```console
+$ lms rm proj/ --llm --preserve-vcs
+{"status":"synced","changes":{"added":[],"modified":[],"deleted":["node_modules","node_modules/pkg","node_modules/pkg/index.js","src","src/main.rs","target","target/debug","target/debug/app"]},"stats":{"scanned_src":0,"scanned_dest":8,"transferred_bytes":0,"duration_ms":3}}
+```
+
+An entry the walk never visits is not counted as scanned, so `scanned_dest` drops
+by the size of `.git/` when the flag is on.
 
 ## Agent-friendly reporting
 
@@ -138,7 +151,7 @@ half-drawn line ever reaches a pipe.
 
 ```console
 $ lms sync src/ dest/ --llm --dry-run
-{"status":"dry_run","changes":{"added":["sub","sub/fresh.txt"],"modified":[{"path":"changed.txt","delta_bytes":6,"hunks":1}],"deleted":["gone.txt"]},"stats":{"scanned":4,"transferred_bytes":0,"duration_ms":2}}
+{"status":"dry_run","changes":{"added":["sub","sub/fresh.txt"],"modified":[{"path":"changed.txt","delta_bytes":6,"hunks":1}],"deleted":["gone.txt"]},"stats":{"scanned_src":3,"scanned_dest":2,"transferred_bytes":0,"duration_ms":2}}
 ```
 
 | Field | Meaning |
@@ -148,7 +161,13 @@ $ lms sync src/ dest/ --llm --dry-run
 | `changes.modified[].delta_bytes` | Source size minus destination size; negative when the file shrank, `0` when only the contents changed |
 | `changes.modified[].hunks` | Number of runs of differing 8 KiB windows - how scattered the change is |
 | `changes.deleted` | Paths the destination had and the source did not |
-| `stats.scanned` | Entries the source scan examined |
+| `stats.scanned_src` | Entries the source scan examined (always `0` for `rm`) |
+| `stats.scanned_dest` | Entries the destination scan examined - the denominator for `deleted` |
+
+The two are separate because a slow run is diagnosable from them: `scanned_src: 10`
+next to `scanned_dest: 450000` says the destination walk is what took the four
+seconds, and five deletions out of five scanned entries is a wipe where five out
+of fifty thousand is a trim.
 | `stats.transferred_bytes` | Bytes written to the destination |
 | `stats.duration_ms` | Wall-clock time of the command |
 
@@ -166,7 +185,7 @@ summarises the rest per category and directory:
 
 ```console
 $ lms sync src/ dest/ --llm --max-report-files 2
-{"status":"synced","changes":{"added":["assets","assets/asset_0.png"],"modified":[],"deleted":[]},"stats":{"scanned":10,"transferred_bytes":68,"duration_ms":2},"truncated":true,"total_overflow":8,"overflow":{"added":{"count":8,"by_dir":{"./":1,"assets/":1,"gen/":6}},"modified":{"count":0,"by_dir":{}},"deleted":{"count":0,"by_dir":{}}}}
+{"status":"synced","changes":{"added":["assets","assets/asset_0.png"],"modified":[],"deleted":[]},"stats":{"scanned_src":10,"scanned_dest":0,"transferred_bytes":68,"duration_ms":2},"truncated":true,"total_overflow":8,"overflow":{"added":{"count":8,"by_dir":{"./":1,"assets/":1,"gen/":6}},"modified":{"count":0,"by_dir":{}},"deleted":{"count":0,"by_dir":{}}}}
 ```
 
 The budget is not first-come-first-served. Unpacking a fixture or generating

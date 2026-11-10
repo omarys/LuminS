@@ -101,7 +101,15 @@ impl Changes {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     /// Entries examined in the source tree
-    pub scanned: usize,
+    ///
+    /// Zero for `rm`, which has no source: its target is the tree the changes
+    /// are taken from, so it counts under [`Stats::scanned_dest`].
+    pub scanned_src: usize,
+    /// Entries examined in the destination tree
+    ///
+    /// The denominator for `deleted`: five deletions out of five scanned files
+    /// is a wipe, five out of fifty thousand is a trim.
+    pub scanned_dest: usize,
     /// Bytes written to the destination
     pub transferred_bytes: u64,
     /// Wall-clock time the command took
@@ -267,8 +275,11 @@ impl Report {
 
         let _ = write!(
             out,
-            "]}},\"stats\":{{\"scanned\":{},\"transferred_bytes\":{},\"duration_ms\":{}}}",
-            self.stats.scanned, self.stats.transferred_bytes, self.stats.duration_ms
+            "]}},\"stats\":{{\"scanned_src\":{},\"scanned_dest\":{},\"transferred_bytes\":{},\"duration_ms\":{}}}",
+            self.stats.scanned_src,
+            self.stats.scanned_dest,
+            self.stats.transferred_bytes,
+            self.stats.duration_ms
         );
 
         if self.truncated {
@@ -522,7 +533,7 @@ mod test_report {
         assert_eq!(
             report.to_json(),
             "{\"status\":\"dry_run\",\"changes\":{\"added\":[],\"modified\":[],\"deleted\":[]},\
-             \"stats\":{\"scanned\":0,\"transferred_bytes\":0,\"duration_ms\":0}}"
+             \"stats\":{\"scanned_src\":0,\"scanned_dest\":0,\"transferred_bytes\":0,\"duration_ms\":0}}"
         );
     }
 
@@ -535,7 +546,8 @@ mod test_report {
             delta_bytes: 412,
             hunks: 2,
         }];
-        report.stats.scanned = 142;
+        report.stats.scanned_src = 142;
+        report.stats.scanned_dest = 1150;
         report.stats.transferred_bytes = 1024;
         report.stats.duration_ms = 48;
 
@@ -543,7 +555,7 @@ mod test_report {
             report.to_json(),
             "{\"status\":\"synced\",\"changes\":{\"added\":[\"path/to/new_file.rs\"],\
              \"modified\":[{\"path\":\"src/main.rs\",\"delta_bytes\":412,\"hunks\":2}],\
-             \"deleted\":[]},\"stats\":{\"scanned\":142,\"transferred_bytes\":1024,\
+             \"deleted\":[]},\"stats\":{\"scanned_src\":142,\"scanned_dest\":1150,\"transferred_bytes\":1024,\
              \"duration_ms\":48}}"
         );
     }

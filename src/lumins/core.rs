@@ -1,5 +1,6 @@
 //! Contains core copy, remove, synchronize functions
 
+use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -163,7 +164,8 @@ pub fn synchronize(src: &str, dest: &str, flags: Flag) -> Result<Report, io::Err
     let dest_file_paths = paths(dest_files);
 
     let mut report = Report::new(status(flags));
-    report.stats.scanned = src_files.len() + src_dirs.len() + src_symlinks.len();
+    report.stats.scanned_src = src_files.len() + src_dirs.len() + src_symlinks.len();
+    report.stats.scanned_dest = dest_files.len() + dest_dirs.len() + dest_symlinks.len();
     // Sizes come straight out of the scan, so the byte total of everything that
     // has to be created is known before a single byte moves.
     let added_bytes: u64 = files_to_copy.iter().map(|file| file.size()).sum();
@@ -313,7 +315,10 @@ pub fn copy(src: &str, dest: &str, flags: Flag) -> Result<Report, io::Error> {
     progress::progress_init((src_files.len() + src_dirs.len() + src_symlinks.len()) as u64);
 
     let mut report = Report::new(status(flags));
-    report.stats.scanned = src_files.len() + src_dirs.len() + src_symlinks.len();
+    report.stats.scanned_src = src_files.len() + src_dirs.len() + src_symlinks.len();
+    report.stats.scanned_dest = dest_file_sets.files().len()
+        + dest_file_sets.symlinks().len()
+        + dest_file_sets.dirs().len();
 
     // A copy has no comparison of its own: by path, an entry is either new to the
     // destination or it is about to be rewritten.
@@ -411,7 +416,9 @@ pub fn remove(target: &str, flags: Flag) -> Result<Report, io::Error> {
     }
 
     let mut report = Report::new(status(flags));
-    report.stats.scanned = target_files.len() + target_dirs.len() + target_symlinks.len();
+    // A remove has no source: its target is the tree being changed, so it is the
+    // destination side of the counters.
+    report.stats.scanned_dest = target_files.len() + target_dirs.len() + target_symlinks.len();
     report.changes.deleted = target_files
         .iter()
         .map(|file| display(file.path()))
@@ -432,6 +439,19 @@ pub fn remove(target: &str, flags: Flag) -> Result<Report, io::Error> {
     // Directories must always be deleted sequentially so that they are deleted in the correct order
     let mut target_dirs: Vec<&file_ops::Dir> = file_ops::sort_files(target_dirs.into_par_iter());
 
+    if flags.contains(Flag::PRESERVE_VCS) {
+        file_ops::delete_files_sequential(target_dirs, target)?;
+        // The target itself stays when the walk spared `.git`: removing it would
+        // fail with ENOTEMPTY, and the caller asked for that directory to live.
+        if is_empty(Path::new(target)) {
+            file_ops::delete_files_sequential(vec![&Dir::from("")], target)?;
+        }
+
+        report.stats.duration_ms = started.elapsed().as_millis();
+        report.changes.sort();
+        return Ok(report);
+    }
+
     // Delete the target directory last
     let root_dir = Dir::from("");
     target_dirs.push(&root_dir);
@@ -441,6 +461,17 @@ pub fn remove(target: &str, flags: Flag) -> Result<Report, io::Error> {
     report.stats.duration_ms = started.elapsed().as_millis();
     report.changes.sort();
     Ok(report)
+}
+
+/// Whether `path` holds no entries at all
+///
+/// `read_dir` is the only check that distinguishes "empty" from "gone" without
+/// racing the delete that just ran, and it costs one open per remove.
+fn is_empty(path: &Path) -> bool {
+    match fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(_) => true,
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
