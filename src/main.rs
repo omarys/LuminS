@@ -3,6 +3,7 @@ use std::process;
 use lms::core;
 use lms::parse::{self, SubCommand};
 use lms::progress::PROGRESS_BAR;
+use lms::report::Report;
 
 fn main() {
     // Parse command args
@@ -18,8 +19,8 @@ fn main() {
     };
 
     // Determine subcommands and flags from args
-    let (sub_command, flags) = match parse::parse_args(&args) {
-        Ok(parsed) => (parsed.sub_command, parsed.flags),
+    let (sub_command, flags, max_report_files) = match parse::parse_args(&args) {
+        Ok(parsed) => (parsed.sub_command, parsed.flags, parsed.max_report_files),
         Err(e) => {
             eprintln!("{e}");
             process::exit(1);
@@ -29,20 +30,59 @@ fn main() {
     parse::set_env(flags);
 
     // Call correct core function depending on subcommand
-    let result = match sub_command {
-        SubCommand::Copy { src, dest } => core::copy(src, &dest, flags),
-        SubCommand::Synchronize { src, dest } => core::synchronize(src, &dest, flags),
+    //
+    // Every branch yields the reports of the directories it worked on, so the
+    // reporting mode has one place to render them. Without a reporting mode the
+    // reports are dropped and the run prints exactly what it always printed.
+    let reports = match sub_command {
+        SubCommand::Copy { src, dest } => core::copy(src, &dest, flags).map(|report| vec![report]),
+        SubCommand::Synchronize { src, dest } => {
+            core::synchronize(src, &dest, flags).map(|report| vec![report])
+        }
         SubCommand::Remove { targets } => targets
             .iter()
-            .try_for_each(|target| core::remove(target, flags)),
+            .map(|target| core::remove(target, flags))
+            .collect(),
     };
 
     // End and remove progress bars
     PROGRESS_BAR.finish_and_clear();
 
     // If error, print to stderr and exit
-    if let Err(e) = result {
-        eprintln!("{}", e);
-        process::exit(1);
+    let mut reports: Vec<Report> = match reports {
+        Ok(reports) => reports,
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
+    };
+
+    if flags.reports() {
+        emit(&mut reports, max_report_files);
     }
+}
+
+/// Writes the run to stdout as one line of JSON
+///
+/// One line, one `write` call: a caller reading a pipe gets the whole document
+/// or nothing, never a partial line to stitch back together.
+fn emit(reports: &mut [Report], max_report_files: Option<usize>) {
+    if let Some(max) = max_report_files {
+        for report in reports.iter_mut() {
+            report.truncate(max);
+        }
+    }
+
+    let json = match reports {
+        [report] => report.to_json(),
+        _ => {
+            let parts: Vec<String> = reports.iter().map(Report::to_json).collect();
+            format!("[{}]", parts.join(","))
+        }
+    };
+
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(stdout, "{json}");
+    let _ = stdout.flush();
 }

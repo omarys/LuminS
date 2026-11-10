@@ -32,6 +32,9 @@
 > `-n/--nodelete` to keep them. The exit status is `0` on success and `1` if any
 > copy, delete, or argument was rejected, so a backup script can branch on it.
 
+> **Running this from an agent?** Add `--llm` and you get one line of JSON
+> instead of a progress bar. See [Agent-friendly reporting](#agent-friendly-reporting).
+
 ```bash
 LuminS 0.4.0
 Luminous Synchronize - A fast and reliable multithreaded alternative to rsync for synchronizing local files
@@ -60,12 +63,17 @@ Arguments:
   <DESTINATION>  Destination directory
 
 Options:
-  -n, --nodelete    Do not delete any destination files
-  -s, --secure      Use a cryptographic hash function for hashing similar files
-  -v, --verbose     Verbose outputs
-  -S, --sequential  Copy files sequentially instead of in parallel
-  -h, --help        Print help
-  -V, --version     Print version
+  -n, --nodelete              Do not delete any destination files
+  -s, --secure                Use a cryptographic hash function for hashing similar files
+  -v, --verbose               Verbose outputs
+  -S, --sequential            Copy files sequentially instead of in parallel
+      --json                  Emit one compact JSON report on stdout and suppress the progress bar
+      --llm                   Agent-first reporting: compact JSON, no progress bar, and at most --max-report-files changes listed (default 50) [alias: --machine-readable]
+      --max-report-files <N>  List at most N changes in a report, summarising the rest per directory (default 50 under --llm, unlimited otherwise)
+      --ignore-vcs-and-build  Skip VCS and build artifacts: .git/, target/, node_modules/, dist/, .cache/, *.pyc
+  -N, --dry-run               Report what would change without touching the destination [alias: --dryrun]
+  -h, --help                  Print help
+  -V, --version               Print version
 ```
 
 #### Copy
@@ -80,10 +88,15 @@ Arguments:
   <DESTINATION>  Destination directory
 
 Options:
-  -v, --verbose     Verbose outputs
-  -S, --sequential  Copy files sequentially instead of in parallel
-  -h, --help        Print help
-  -V, --version     Print version
+  -v, --verbose               Verbose outputs
+  -S, --sequential            Copy files sequentially instead of in parallel
+      --json                  Emit one compact JSON report on stdout and suppress the progress bar
+      --llm                   Agent-first reporting: compact JSON, no progress bar, and at most --max-report-files changes listed (default 50) [alias: --machine-readable]
+      --max-report-files <N>  List at most N changes in a report, summarising the rest per directory (default 50 under --llm, unlimited otherwise)
+      --ignore-vcs-and-build  Skip VCS and build artifacts: .git/, target/, node_modules/, dist/, .cache/, *.pyc
+  -N, --dry-run               Report what would change without touching the destination [alias: --dryrun]
+  -h, --help                  Print help
+  -V, --version               Print version
 ```
 
 #### Remove
@@ -97,11 +110,73 @@ Arguments:
   <TARGET>...  Target directory
 
 Options:
-  -v, --verbose     Verbose outputs
-  -S, --sequential  Delete files sequentially instead of in parallel
-  -h, --help        Print help
-  -V, --version     Print version
+  -v, --verbose               Verbose outputs
+  -S, --sequential            Delete files sequentially instead of in parallel
+      --json                  Emit one compact JSON report on stdout and suppress the progress bar
+      --llm                   Agent-first reporting: compact JSON, no progress bar, and at most --max-report-files changes listed (default 50) [alias: --machine-readable]
+      --max-report-files <N>  List at most N changes in a report, summarising the rest per directory (default 50 under --llm, unlimited otherwise)
+      --ignore-vcs-and-build  Skip VCS and build artifacts: .git/, target/, node_modules/, dist/, .cache/, *.pyc
+  -N, --dry-run               Report what would change without touching the destination [alias: --dryrun]
+  -h, --help                  Print help
+  -V, --version               Print version
 ```
+
+## Agent-friendly reporting
+
+A progress bar and a `Copying file ...` line per entry are the right output for a
+human watching a sync, and the wrong output for a program reading one: every
+repaint and every unchanged path spends context on nothing.
+
+`--llm` (alias `--machine-readable`) and `--json` replace that output with a
+single line of JSON on stdout. Both run the same engine; `--llm` only adds a
+default `--max-report-files 50`. The progress bar is disabled whenever one of
+these flags is passed, or when stdout is not a terminal, so no carriage return or
+half-drawn line ever reaches a pipe.
+
+```console
+$ lms sync src/ dest/ --llm --dry-run
+{"status":"dry_run","changes":{"added":["sub","sub/fresh.txt"],"modified":[{"path":"changed.txt","delta_bytes":6,"hunks":1}],"deleted":["gone.txt"]},"stats":{"scanned":4,"transferred_bytes":0,"duration_ms":2}}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `status` | `dry_run` when nothing was written, `synced` when the plan was applied |
+| `changes.added` | Paths in the source that the destination did not have |
+| `changes.modified[].delta_bytes` | Source size minus destination size; negative when the file shrank, `0` when only the contents changed |
+| `changes.modified[].hunks` | Number of runs of differing 8 KiB windows - how scattered the change is |
+| `changes.deleted` | Paths the destination had and the source did not |
+| `stats.scanned` | Entries the source scan examined |
+| `stats.transferred_bytes` | Bytes written to the destination |
+| `stats.duration_ms` | Wall-clock time of the command |
+
+Classification is by path: a file that grew is one `modified` entry, never a
+`deleted` plus an `added` one.
+
+### Truncation
+
+A sync of a build tree changes thousands of files, and listing them all is what
+blows up a caller's context - which directory they live in is the whole signal.
+`--max-report-files N` keeps the first `N` changes (sorted, so the cut is stable)
+and summarises the rest per directory:
+
+```console
+$ lms sync src/ dest/ --llm --max-report-files 2
+{"status":"synced","changes":{"added":["assets","assets/asset_0.png"],"modified":[],"deleted":[]},"stats":{"scanned":10,"transferred_bytes":68,"duration_ms":2},"truncated":true,"total_overflow":8,"overflow_by_dir":{"./":1,"assets/":1,"gen/":6}}
+```
+
+The truncation keys are absent unless something was dropped, so a caller never
+has to read a `"truncated": false` branch it does not need.
+
+### Skipping build and VCS noise
+
+`--ignore-vcs-and-build` skips `.git/`, `target/`, `node_modules/`, `dist/`,
+`.cache/` and `*.pyc`. Only entries inside the walked tree are skipped: pointing
+`lms` at `.git` or `target` still syncs it.
+
+```console
+$ lms sync src/ dest/ --llm --ignore-vcs-and-build
+```
+
 
 ## Benchmarks
 

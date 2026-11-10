@@ -41,3 +41,6 @@ perf = { level = "warn", priority = -1 }
 [profile.release]
 # Symbols are kept so a panic in the release binary still yields a usable backtrace.
 lto = true
+
+[dev-dependencies]
+serde_json = "1.0.154"

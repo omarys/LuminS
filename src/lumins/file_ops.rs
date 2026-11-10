@@ -15,6 +15,49 @@ use seahash::SeaHasher;
 use crate::lumins::parse::Flag;
 use crate::progress::PROGRESS_BAR;
 
+/// Directory names that `--ignore-vcs-and-build` skips wholesale
+///
+/// These are the trees a caller almost never means to synchronise and almost
+/// always pays for: version control metadata, build output, and installed
+/// dependencies. Listing them here keeps that decision in one place instead of
+/// repeating a `--exclude` list on every call.
+const VCS_AND_BUILD_DIRS: [&str; 5] = [".git", "target", "node_modules", "dist", ".cache"];
+
+/// File extension that `--ignore-vcs-and-build` skips
+const VCS_AND_BUILD_EXTENSION: &str = "pyc";
+
+/// What a tree walk leaves out
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Scan {
+    ignore_vcs_and_build: bool,
+}
+
+impl Scan {
+    /// Builds the walk filter the given flags ask for
+    fn from_flags(flags: Flag) -> Self {
+        Scan {
+            ignore_vcs_and_build: flags.contains(Flag::IGNORE_VCS_AND_BUILD),
+        }
+    }
+
+    /// Whether the walk skips the entry named `name`
+    ///
+    /// Only names inside the walked tree are tested, never the root itself: a
+    /// caller that points `lms` at `.git` or `target` means it.
+    fn skips(&self, name: &std::ffi::OsStr) -> bool {
+        if !self.ignore_vcs_and_build {
+            return false;
+        }
+        if VCS_AND_BUILD_DIRS
+            .iter()
+            .any(|skipped| name == std::ffi::OsStr::new(skipped))
+        {
+            return true;
+        }
+        Path::new(name).extension() == Some(std::ffi::OsStr::new(VCS_AND_BUILD_EXTENSION))
+    }
+}
+
 /// Removes whatever currently sits at `dest` so that a new entry can take its
 /// place.
 ///
@@ -100,6 +143,14 @@ impl File {
             path: PathBuf::from(path),
             size,
         }
+    }
+
+    /// Byte length recorded by the scan
+    ///
+    /// The size comes from the scan's own metadata, so totalling a transfer plan
+    /// costs no extra filesystem call.
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -273,6 +324,12 @@ impl FileSets {
 ///   `files_to_compare`, `dest + file.path()` is the absolute path of the destination file
 /// * `flags`: set for Flag's
 ///
+/// # Returns
+/// The paths of the entries that differed, relative to `src`, sorted
+///
+/// With `Flag::DRY_RUN` the comparison still happens and the list is still
+/// built; only the copy is skipped.
+///
 /// # Errors
 /// Returns an error naming the entries that could not be compared or copied;
 /// every other file is still processed.
@@ -281,21 +338,33 @@ pub fn compare_and_copy_files<'a, T, S>(
     src: &str,
     dest: &str,
     flags: Flag,
-) -> io::Result<()>
+) -> io::Result<Vec<PathBuf>>
 where
     T: ParallelIterator<Item = &'a S>,
     S: FileOps + Sync + 'a,
 {
     let failures = Failures::default();
+    let differing = Mutex::new(Vec::new());
 
     files_to_compare.for_each(|file| {
-        if let Err(e) = compare_and_copy_file(file, src, dest, flags) {
-            failures.record(&Path::new(src).join(file.path()), e);
+        match compare_and_copy_file(file, src, dest, flags) {
+            Ok(true) => differing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(file.path().to_path_buf()),
+            Ok(false) => {}
+            Err(e) => failures.record(&Path::new(src).join(file.path()), e),
         }
         PROGRESS_BAR.inc(2);
     });
 
-    failures.into_result("copy")
+    failures.into_result("copy")?;
+
+    let mut differing = differing
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    differing.sort();
+    Ok(differing)
 }
 
 /// Compares the given file and copies the src file over if it differs from the dest file
@@ -308,6 +377,9 @@ where
 ///   is the absolute path of the destination file
 /// * `flags`: set for Flag's
 ///
+/// # Returns
+/// Whether the destination had to be rewritten
+///
 /// # Errors
 /// Returns an error if the copy was needed and failed.
 fn compare_and_copy_file<S>(
@@ -315,7 +387,7 @@ fn compare_and_copy_file<S>(
     src: &str,
     dest: &str,
     flags: Flag,
-) -> io::Result<()>
+) -> io::Result<bool>
 where
     S: FileOps,
 {
@@ -333,11 +405,13 @@ where
         }
     };
 
-    if copy {
-        copy_file(file_to_compare, src, dest)
-    } else {
-        Ok(())
+    if !copy {
+        return Ok(false);
     }
+    if !flags.contains(Flag::DRY_RUN) {
+        copy_file(file_to_compare, src, dest)?;
+    }
+    Ok(true)
 }
 
 /// Copies all given files from `src` to `dest` in parallel
@@ -616,7 +690,23 @@ where
 /// * Ok: A `FileSets` containing a set of files a set of directories
 /// * Error: If `src` is an invalid directory
 pub fn get_all_files(src: &str) -> Result<FileSets, io::Error> {
-    get_all_files_helper(Path::new(src), src)
+    get_all_files_with(src, Flag::empty())
+}
+
+/// Traverses `src` and every subdirectory, leaving out what `flags` excludes
+///
+/// The same filter must be used on both trees of a sync: skipping a directory
+/// on one side only would read as "the other side no longer has it".
+///
+/// # Arguments
+/// * `src`: directory to traverse
+/// * `flags`: set for Flag's
+///
+/// # Returns
+/// * Ok: A `FileSets` containing a set of files a set of directories
+/// * Error: If `src` is an invalid directory
+pub fn get_all_files_with(src: &str, flags: Flag) -> Result<FileSets, io::Error> {
+    get_all_files_in(Path::new(src), src, Scan::from_flags(flags))
 }
 
 /// Recursive helper for `get_all_files`
@@ -624,11 +714,12 @@ pub fn get_all_files(src: &str) -> Result<FileSets, io::Error> {
 /// # Arguments
 /// * `src`: directory to traverse
 /// * `base`: directory to traverse, used for recursive calls
+/// * `scan`: what the walk leaves out
 ///
 /// # Returns
 /// * Ok: A `FileSets` containing a set of files a set of directories
 /// * Error: If `src` is an invalid directory
-fn get_all_files_helper(src: &Path, base: &str) -> Result<FileSets, io::Error> {
+fn get_all_files_in(src: &Path, base: &str, scan: Scan) -> Result<FileSets, io::Error> {
     let dir = src.read_dir()?;
 
     let mut files = HashSet::new();
@@ -653,6 +744,11 @@ fn get_all_files_helper(src: &Path, base: &str) -> Result<FileSets, io::Error> {
         };
 
         let path = file.path();
+        let name = file.file_name();
+        if scan.skips(&name) {
+            continue;
+        }
+
         // This is safe to unwrap, since `get_all_files` always calls this helper
         // with `base` equal to `src`
         let relative_path = path.strip_prefix(base).unwrap();
@@ -662,8 +758,8 @@ fn get_all_files_helper(src: &Path, base: &str) -> Result<FileSets, io::Error> {
                 path: relative_path.to_path_buf(),
             });
 
-            // Recursively call `get_all_files_helper` on the subdirectory
-            match get_all_files_helper(&file.path(), base) {
+            // Recursively call `get_all_files_in` on the subdirectory
+            match get_all_files_in(&file.path(), base, scan) {
                 Ok(file_sets) => {
                     // Add subdirectory subdirectories and files to sets
                     files.extend(file_sets.files);

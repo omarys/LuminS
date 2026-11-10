@@ -3,6 +3,7 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use bitflags::bitflags;
@@ -11,7 +12,11 @@ use env_logger::Builder;
 use log::LevelFilter;
 use thiserror::Error;
 
-use crate::progress::PROGRESS_BAR;
+use crate::progress;
+
+/// How many changes a machine-readable report lists before it starts
+/// summarising the rest per directory
+pub const DEFAULT_MAX_REPORT_FILES: usize = 50;
 
 bitflags! {
     /// Enum to represent command line flags
@@ -19,10 +24,24 @@ bitflags! {
     /// bitflags 2 no longer derives these traits implicitly, so they are spelled out here.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Flag: u32 {
-        const NO_DELETE     = 0x1;
-        const SECURE        = 0x2;
-        const VERBOSE       = 0x4;
-        const SEQUENTIAL    = 0x8;
+        const NO_DELETE             = 0x1;
+        const SECURE                = 0x2;
+        const VERBOSE               = 0x4;
+        const SEQUENTIAL            = 0x8;
+        const JSON                  = 0x10;
+        const LLM                   = 0x20;
+        const IGNORE_VCS_AND_BUILD  = 0x40;
+        const DRY_RUN               = 0x80;
+    }
+}
+
+impl Flag {
+    /// Whether the run must emit a structured report instead of terminal output
+    ///
+    /// `--json` and `--llm` are the same reporting engine; they differ only in
+    /// the default for `--max-report-files`, which `parse_args` resolves.
+    pub fn reports(self) -> bool {
+        self.intersects(Flag::JSON | Flag::LLM)
     }
 }
 
@@ -45,6 +64,8 @@ pub enum SubCommand<'a> {
 pub struct ParseResult<'a> {
     pub sub_command: SubCommand<'a>,
     pub flags: Flag,
+    /// How many changes a report lists before truncating, `None` for no limit
+    pub max_report_files: Option<usize>,
 }
 
 /// Everything that can stop the command line from becoming a `SubCommand`
@@ -66,6 +87,8 @@ pub enum ParseError {
     CreateDestination { dest: String, source: io::Error },
     #[error("Target Error -- no target is a directory")]
     NoValidTargets,
+    #[error("Argument Error -- {0}: {1}")]
+    InvalidArgument(&'static str, String),
 }
 
 /// Builds the command line interface.
@@ -84,6 +107,62 @@ pub fn command() -> Command {
             .help("Verbose outputs")
     };
 
+    let sequential = |help: &'static str| {
+        Arg::new("sequential")
+            .short('S')
+            .long("sequential")
+            .action(ArgAction::SetTrue)
+            .help(help)
+    };
+
+    let json = || {
+        Arg::new("json")
+            .long("json")
+            .action(ArgAction::SetTrue)
+            .help("Emit one compact JSON report on stdout and suppress the progress bar")
+    };
+
+    let llm = || {
+        Arg::new("llm")
+            .long("llm")
+            .visible_alias("machine-readable")
+            .action(ArgAction::SetTrue)
+            .help(
+                "Agent-first reporting: compact JSON, no progress bar, and at most \
+                 --max-report-files changes listed (default 50)",
+            )
+    };
+
+    let max_report_files = || {
+        Arg::new("max-report-files")
+            .long("max-report-files")
+            .value_name("N")
+            .value_parser(clap::value_parser!(usize))
+            .help(
+                "List at most N changes in a report, summarising the rest per directory \
+                 (default 50 under --llm, unlimited otherwise)",
+            )
+    };
+
+    let ignore_vcs_and_build = || {
+        Arg::new("ignore-vcs-and-build")
+            .long("ignore-vcs-and-build")
+            .action(ArgAction::SetTrue)
+            .help(
+                "Skip VCS and build artifacts: .git/, target/, node_modules/, dist/, .cache/, \
+                 *.pyc",
+            )
+    };
+
+    let dry_run = || {
+        Arg::new("dry-run")
+            .short('N')
+            .long("dry-run")
+            .visible_alias("dryrun")
+            .action(ArgAction::SetTrue)
+            .help("Report what would change without touching the destination")
+    };
+
     Command::new("LuminS")
         .version(env!("CARGO_PKG_VERSION"))
         // clap 2 propagated the version to subcommands, so `lms cp -V` worked.
@@ -100,13 +179,12 @@ pub fn command() -> Command {
                 .about("Multithreaded directory copy")
                 .arg_required_else_help(true)
                 .arg(verbose())
-                .arg(
-                    Arg::new("sequential")
-                        .short('S')
-                        .long("sequential")
-                        .action(ArgAction::SetTrue)
-                        .help("Copy files sequentially instead of in parallel"),
-                )
+                .arg(sequential("Copy files sequentially instead of in parallel"))
+                .arg(json())
+                .arg(llm())
+                .arg(max_report_files())
+                .arg(ignore_vcs_and_build())
+                .arg(dry_run())
                 .arg(
                     Arg::new("SOURCE")
                         .help("Source directory")
@@ -125,13 +203,14 @@ pub fn command() -> Command {
                 .about("Multithreaded directory remove")
                 .arg_required_else_help(true)
                 .arg(verbose())
-                .arg(
-                    Arg::new("sequential")
-                        .short('S')
-                        .long("sequential")
-                        .action(ArgAction::SetTrue)
-                        .help("Delete files sequentially instead of in parallel"),
-                )
+                .arg(sequential(
+                    "Delete files sequentially instead of in parallel",
+                ))
+                .arg(json())
+                .arg(llm())
+                .arg(max_report_files())
+                .arg(ignore_vcs_and_build())
+                .arg(dry_run())
                 .arg(
                     Arg::new("TARGET")
                         .help("Target directory")
@@ -160,13 +239,12 @@ pub fn command() -> Command {
                         .help("Use a cryptographic hash function for hashing similar files"),
                 )
                 .arg(verbose())
-                .arg(
-                    Arg::new("sequential")
-                        .short('S')
-                        .long("sequential")
-                        .action(ArgAction::SetTrue)
-                        .help("Copy files sequentially instead of in parallel"),
-                )
+                .arg(sequential("Copy files sequentially instead of in parallel"))
+                .arg(json())
+                .arg(llm())
+                .arg(max_report_files())
+                .arg(ignore_vcs_and_build())
+                .arg(dry_run())
                 .arg(
                     Arg::new("SOURCE")
                         .help("Source directory")
@@ -208,11 +286,15 @@ pub fn parse_args(args: &ArgMatches) -> Result<ParseResult<'_>, ParseError> {
 
     // Each flag is paired with its own bit, so the order of this list is not
     // load-bearing and a reordering cannot silently mint the wrong bits.
-    const FLAGS: [(Flag, &str); 4] = [
+    const FLAGS: [(Flag, &str); 8] = [
         (Flag::NO_DELETE, "nodelete"),
         (Flag::SECURE, "secure"),
         (Flag::VERBOSE, "verbose"),
         (Flag::SEQUENTIAL, "sequential"),
+        (Flag::JSON, "json"),
+        (Flag::LLM, "llm"),
+        (Flag::IGNORE_VCS_AND_BUILD, "ignore-vcs-and-build"),
+        (Flag::DRY_RUN, "dry-run"),
     ];
 
     let mut flags = Flag::empty();
@@ -239,7 +321,27 @@ pub fn parse_args(args: &ArgMatches) -> Result<ParseResult<'_>, ParseError> {
         other => return Err(ParseError::UnknownSubCommand(other.to_string())),
     };
 
-    Ok(ParseResult { sub_command, flags })
+    Ok(ParseResult {
+        sub_command,
+        flags,
+        max_report_files: max_report_files(args, flags)?,
+    })
+}
+
+/// Resolves `--max-report-files`
+///
+/// A report is truncated by default only in `--llm` mode: that is the mode meant
+/// to be read by a model, so an unbounded list is the failure it exists to
+/// prevent. `--json` keeps the explicit limit the caller asked for, and no
+/// machine-readable mode means no truncation at all.
+fn max_report_files(args: &ArgMatches, flags: Flag) -> Result<Option<usize>, ParseError> {
+    match args.try_get_one::<usize>("max-report-files") {
+        Ok(Some(&max)) => Ok(Some(max)),
+        Ok(None) if flags.contains(Flag::LLM) => Ok(Some(DEFAULT_MAX_REPORT_FILES)),
+        Ok(None) => Ok(None),
+        // `rm` has no `--max-report-files`; absent is the answer there.
+        Err(_) => Ok(None),
+    }
 }
 
 /// Returns the value of the required argument `name`
@@ -286,7 +388,7 @@ fn prepare_dest(
         source,
     })?;
 
-    if flags.contains(Flag::VERBOSE) {
+    if flags.contains(Flag::VERBOSE) && !flags.reports() {
         println!("Creating dir {dest}");
     }
 
@@ -325,11 +427,28 @@ fn valid_targets(args: &ArgMatches) -> Result<Vec<String>, ParseError> {
 
 /// Sets up the environment based on given flags
 pub fn set_env(flags: Flag) {
+    // A progress bar repaints with carriage returns and an ETA nobody watching a
+    // pipe can see. It is turned off when the output is not a terminal, and
+    // whenever the caller asked for something machine-readable.
+    if flags.reports() || !std::io::stdout().is_terminal() {
+        progress::disable();
+    }
+
     let mut builder = Builder::new();
-    builder.format(|_, record| {
-        PROGRESS_BAR.println(record.args().to_string());
-        Ok(())
-    });
+    if flags.reports() {
+        // Log records go straight to stderr: routing them through a hidden
+        // progress bar would silently drop them, and a buffered bar could still
+        // emit a partial line.
+        builder.format(|_, record| {
+            eprintln!("{}", record.args());
+            Ok(())
+        });
+    } else {
+        builder.format(|_, record| {
+            progress::PROGRESS_BAR.println(record.args().to_string());
+            Ok(())
+        });
+    }
 
     // If verbose, enable info logging
     if flags.contains(Flag::VERBOSE) {
@@ -521,5 +640,98 @@ mod test_parse_args {
             .expect("source and destination exist")
             .flags;
         assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn reporting_flags_are_read_from_the_subcommand() {
+        let scratch = Scratch::new("reporting_flags_are_read_from_the_subcommand");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+        let args = matches(&[
+            "lms",
+            "sync",
+            "--llm",
+            "--ignore-vcs-and-build",
+            "--dry-run",
+            &src,
+            &dest,
+        ]);
+
+        let flags = parse_args(&args)
+            .expect("source and destination exist")
+            .flags;
+        assert!(flags.reports());
+        assert!(flags.contains(Flag::LLM));
+        assert!(flags.contains(Flag::IGNORE_VCS_AND_BUILD));
+        assert!(flags.contains(Flag::DRY_RUN));
+    }
+
+    #[test]
+    fn machine_readable_is_an_alias_for_llm() {
+        let scratch = Scratch::new("machine_readable_is_an_alias_for_llm");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+        let args = matches(&["lms", "sync", "--machine-readable", &src, &dest]);
+
+        let flags = parse_args(&args)
+            .expect("source and destination exist")
+            .flags;
+        assert!(flags.contains(Flag::LLM));
+        assert!(flags.reports());
+    }
+
+    #[test]
+    fn llm_mode_caps_the_report_at_fifty_files() {
+        let scratch = Scratch::new("llm_mode_caps_the_report_at_fifty_files");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+        let args = matches(&["lms", "sync", "--llm", &src, &dest]);
+
+        let parsed = parse_args(&args).expect("source and destination exist");
+        assert_eq!(parsed.max_report_files, Some(DEFAULT_MAX_REPORT_FILES));
+        assert_eq!(parsed.max_report_files, Some(50));
+    }
+
+    #[test]
+    fn an_explicit_limit_wins_over_the_default() {
+        let scratch = Scratch::new("an_explicit_limit_wins_over_the_default");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+        let args = matches(&[
+            "lms",
+            "sync",
+            "--llm",
+            "--max-report-files",
+            "3",
+            &src,
+            &dest,
+        ]);
+
+        let parsed = parse_args(&args).expect("source and destination exist");
+        assert_eq!(parsed.max_report_files, Some(3));
+    }
+
+    #[test]
+    fn json_mode_does_not_truncate_unless_asked() {
+        let scratch = Scratch::new("json_mode_does_not_truncate_unless_asked");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+        let args = matches(&["lms", "sync", "--json", &src, &dest]);
+
+        let parsed = parse_args(&args).expect("source and destination exist");
+        assert!(parsed.flags.reports());
+        assert_eq!(parsed.max_report_files, None);
+    }
+
+    #[test]
+    fn a_plain_run_never_truncates() {
+        let scratch = Scratch::new("a_plain_run_never_truncates");
+        let src = scratch.sub_dir("source");
+        let dest = scratch.sub_dir("dest");
+        let args = matches(&["lms", "sync", &src, &dest]);
+
+        let parsed = parse_args(&args).expect("source and destination exist");
+        assert!(!parsed.flags.reports());
+        assert_eq!(parsed.max_report_files, None);
     }
 }

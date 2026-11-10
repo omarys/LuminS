@@ -18,4 +18,4 @@
 //! ```
 
 mod lumins;
-pub use lumins::{core, file_ops, parse, progress};
+pub use lumins::{core, file_ops, parse, progress, report};
