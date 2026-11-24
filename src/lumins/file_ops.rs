@@ -658,6 +658,20 @@ impl<H: Hasher> Write for HasherWriter<'_, H> {
     }
 }
 
+/// Adapts a `Digest` to `io::Write`, so a file can be hashed as it is read
+struct DigestWriter<'a, D: Digest>(&'a mut D);
+
+impl<D: Digest> Write for DigestWriter<'_, D> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Generates a hash of the given file, using the BLAKE2b cryptographic hash function
 ///
 /// # Arguments
@@ -678,7 +692,7 @@ where
         Ok(file) => {
             let mut hasher = Blake2b512::new();
 
-            match io::copy(file, &mut hasher) {
+            match io::copy(file, &mut DigestWriter(&mut hasher)) {
                 Ok(_) => Some(hasher.finalize().to_vec()),
                 Err(e) => {
                     error!("Error -- Hashing: {:?}: {}", file_to_hash.path(), e);
