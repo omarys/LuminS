@@ -299,4 +299,3 @@ Suggestions, issues, and pull requests are welcome!
 ## License
 
 MIT, see [LICENSE](LICENSE).
-
